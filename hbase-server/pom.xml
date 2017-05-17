@@ -27,7 +27,7 @@
     <relativePath>..</relativePath>
   </parent>
   <artifactId>hbase-server</artifactId>
-  <version>1.2.4-fk</version>
+  <version>1.2.4-fk2</version>
   <name>Apache HBase - Server</name>
   <description>Main functionality for HBase</description>
   <properties>
@@ -362,39 +362,47 @@
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-common</artifactId>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-protocol</artifactId>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-procedure</artifactId>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-client</artifactId>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-prefix-tree</artifactId>
+      <version>1.2.4</version>
       <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-common</artifactId>
+      <version>1.2.4</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-annotations</artifactId>
+      <version>1.2.4</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-procedure</artifactId>
+      <version>1.2.4</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
@@ -420,10 +428,12 @@
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-hadoop-compat</artifactId>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>hbase-hadoop-compat</artifactId>
+      <version>1.2.4</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
