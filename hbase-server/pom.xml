@@ -27,6 +27,7 @@
     <relativePath>..</relativePath>
   </parent>
   <artifactId>hbase-server</artifactId>
+  <version>1.2.4-fk</version>
   <name>Apache HBase - Server</name>
   <description>Main functionality for HBase</description>
   <properties>
@@ -91,10 +92,10 @@
                 <bundled-bootstrap>${license.bundles.bootstrap}</bundled-bootstrap>
               </properties>
               <resourceBundles>
-                <resourceBundle>${project.groupId}:hbase-resource-bundle:${project.version}</resourceBundle>
+                <resourceBundle>${project.groupId}:hbase-resource-bundle:1.2.4</resourceBundle>
               </resourceBundles>
               <supplementalModelArtifacts>
-                <supplementalModelArtifact>${project.groupId}:hbase-resource-bundle:${project.version}</supplementalModelArtifact>
+                <supplementalModelArtifact>${project.groupId}:hbase-resource-bundle:1.2.4</supplementalModelArtifact>
               </supplementalModelArtifacts>
               <supplementalModels>
                 <supplementalModel>supplemental-models.xml</supplementalModel>
@@ -401,7 +402,7 @@
     <dependency>
        <groupId>org.apache.hbase</groupId>
        <artifactId>hbase-resource-bundle</artifactId>
-       <version>${project.version}</version>
+       <version>1.2.4</version>
        <optional>true</optional>
     </dependency>
     <dependency>
@@ -429,12 +430,12 @@
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>${compat.module}</artifactId>
-      <version>${project.version}</version>
+      <version>1.2.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.hbase</groupId>
       <artifactId>${compat.module}</artifactId>
-      <version>${project.version}</version>
+      <version>1.2.4</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>

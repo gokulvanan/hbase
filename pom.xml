@@ -795,7 +795,7 @@
             <dependency>
               <groupId>org.apache.hbase</groupId>
               <artifactId>hbase-checkstyle</artifactId>
-              <version>${project.version}</version>
+              <version>1.2.4</version>
             </dependency>
             <dependency>
               <groupId>com.puppycrawl.tools</groupId>
@@ -937,7 +937,7 @@
           <dependency>
             <groupId>org.apache.hbase</groupId>
             <artifactId>hbase-checkstyle</artifactId>
-            <version>${project.version}</version>
+            <version>1.2.4</version>
           </dependency>
           <dependency>
             <groupId>com.puppycrawl.tools</groupId>
@@ -1066,7 +1066,7 @@
           <imagesDir>images</imagesDir>
           <sourceHighlighter>coderay</sourceHighlighter>
           <attributes>
-            <docVersion>${project.version}</docVersion>
+            <docVersion>1.2.4</docVersion>
           </attributes>
         </configuration>
         <executions>
@@ -1148,6 +1148,7 @@
     </plugins>
   </build>
   <properties>
+    <project.version>1.2.4</project.version>
     <!-- override on command line to have generated LICENSE files include
          diagnostic info for verifying notice requirements -->
     <license.debug.print.included>false</license.debug.print.included>
@@ -1234,15 +1235,15 @@
     <package.log.dir>/var/log/hbase</package.log.dir>
     <package.pid.dir>/var/run/hbase</package.pid.dir>
     <package.release>1</package.release>
-    <final.name>${project.artifactId}-${project.version}</final.name>
+    <final.name>${project.artifactId}-1.2.4</final.name>
     <!-- Intraproject jar naming properties -->
     <!-- TODO this is pretty ugly, but works for the moment.
       Modules are pretty heavy-weight things, so doing this work isn't too bad. -->
-    <server.test.jar>hbase-server-${project.version}-tests.jar</server.test.jar>
-    <common.test.jar>hbase-common-${project.version}-tests.jar</common.test.jar>
-    <procedure.test.jar>hbase-procedure-${project.version}-tests.jar</procedure.test.jar>
-    <it.test.jar>hbase-it-${project.version}-tests.jar</it.test.jar>
-    <annotations.test.jar>hbase-annotations-${project.version}-tests.jar</annotations.test.jar>
+    <server.test.jar>hbase-server-1.2.4-tests.jar</server.test.jar>
+    <common.test.jar>hbase-common-1.2.4-tests.jar</common.test.jar>
+    <procedure.test.jar>hbase-procedure-1.2.4-tests.jar</procedure.test.jar>
+    <it.test.jar>hbase-it-1.2.4-tests.jar</it.test.jar>
+    <annotations.test.jar>hbase-annotations-1.2.4-tests.jar</annotations.test.jar>
     <surefire.version>2.18.1</surefire.version>
     <surefire.provider>surefire-junit47</surefire.provider>
     <!-- default: run small & medium, medium with 2 threads -->
@@ -1288,125 +1289,125 @@
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-annotations</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-annotations</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <!--Was test scope only but if we want to run hbase-it tests, need the annotations test jar-->
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-common</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-common</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-protocol</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-procedure</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-procedure</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-hadoop-compat</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-hadoop-compat</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>${compat.module}</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>${compat.module}</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <artifactId>hbase-server</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <artifactId>hbase-server</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <artifactId>hbase-shell</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <artifactId>hbase-shell</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <artifactId>hbase-thrift</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <artifactId>hbase-thrift</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <artifactId>hbase-rest</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <artifactId>hbase-rest</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
           <groupId>org.apache.hbase</groupId>
           <artifactId>hbase-testing-util</artifactId>
-          <version>${project.version}</version>
+          <version>1.2.4</version>
           <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-prefix-tree</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <!-- unfortunately, runtime scope causes Eclipse to give compile time access which isn't
           needed, however it is apparently needed to run things within Eclipse -->
         <scope>runtime</scope>
@@ -1414,24 +1415,24 @@
       <dependency>
         <artifactId>hbase-examples</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hbase</groupId>
         <artifactId>hbase-external-blockcache</artifactId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <dependency>
         <artifactId>hbase-it</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
         <type>test-jar</type>
         <scope>test</scope>
       </dependency>
       <dependency>
         <artifactId>hbase-client</artifactId>
         <groupId>org.apache.hbase</groupId>
-        <version>${project.version}</version>
+        <version>1.2.4</version>
       </dependency>
       <!-- General dependencies -->
       <dependency>
@@ -2620,7 +2621,7 @@
               <docletArtifact>
                 <groupId>org.apache.hbase</groupId>
                 <artifactId>hbase-annotations</artifactId>
-                <version>${project.version}</version>
+                <version>1.2.4</version>
               </docletArtifact>
               <destDir>apidocs</destDir>
               <name>User API</name>
