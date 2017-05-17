@@ -54,7 +54,7 @@ import org.apache.hadoop.hbase.util.Pair;
  *
  */
 @InterfaceAudience.LimitedPrivate(HBaseInterfaceAudience.CONFIG)
-public class FavoredNodeLoadBalancer extends BaseLoadBalancer {
+public class FavoredNodeLoadBalancer extends BaseLoadBalancer implements FavoredNodeBalancer {
   private static final Log LOG = LogFactory.getLog(FavoredNodeLoadBalancer.class);
 
   private FavoredNodesPlan globalFavoredNodesAssignmentPlan;
@@ -307,6 +307,7 @@ public class FavoredNodeLoadBalancer extends BaseLoadBalancer {
     regionsOnServer.add(region);
   }
 
+  @Override
   public List<ServerName> getFavoredNodes(HRegionInfo regionInfo) {
     return this.globalFavoredNodesAssignmentPlan.getFavoredNodes(regionInfo);
   }

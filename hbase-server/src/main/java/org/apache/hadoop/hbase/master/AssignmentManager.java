@@ -81,7 +81,7 @@ import org.apache.hadoop.hbase.ipc.RpcClient;
 import org.apache.hadoop.hbase.ipc.ServerNotRunningYetException;
 import org.apache.hadoop.hbase.master.RegionState.State;
 import org.apache.hadoop.hbase.master.balancer.FavoredNodeAssignmentHelper;
-import org.apache.hadoop.hbase.master.balancer.FavoredNodeLoadBalancer;
+import org.apache.hadoop.hbase.master.balancer.FavoredNodeBalancer;
 import org.apache.hadoop.hbase.master.handler.ClosedRegionHandler;
 import org.apache.hadoop.hbase.master.handler.DisableTableHandler;
 import org.apache.hadoop.hbase.master.handler.EnableTableHandler;
@@ -289,9 +289,10 @@ public class AssignmentManager extends ZooKeeperListener {
                            (new HashMap<String, HRegionInfo> ());
     Configuration conf = server.getConfiguration();
     // Only read favored nodes if using the favored nodes load balancer.
-    this.shouldAssignRegionsWithFavoredNodes = conf.getClass(
-           HConstants.HBASE_MASTER_LOADBALANCER_CLASS, Object.class).equals(
-           FavoredNodeLoadBalancer.class);
+    this.shouldAssignRegionsWithFavoredNodes = (balancer instanceof FavoredNodeBalancer);
+//    this.shouldAssignRegionsWithFavoredNodes = conf.getClass(
+//           HConstants.HBASE_MASTER_LOADBALANCER_CLASS, Object.class).equals(
+//           FavoredNodeLoadBalancer.class);
     try {
       if (server.getCoordinatedStateManager() != null) {
         this.tableStateManager = server.getCoordinatedStateManager().getTableStateManager();
@@ -1177,7 +1178,7 @@ public class AssignmentManager extends ZooKeeperListener {
         new HashMap<HRegionInfo, List<ServerName>>();
     for (HRegionInfo region : regions) {
       regionToFavoredNodes.put(region,
-          ((FavoredNodeLoadBalancer)this.balancer).getFavoredNodes(region));
+          ((FavoredNodeBalancer)this.balancer).getFavoredNodes(region));
     }
     FavoredNodeAssignmentHelper.updateMetaWithFavoredNodesInfo(regionToFavoredNodes,
       this.server.getConnection());
@@ -1705,7 +1706,7 @@ public class AssignmentManager extends ZooKeeperListener {
               region, State.PENDING_OPEN, destination);
             List<ServerName> favoredNodes = ServerName.EMPTY_SERVER_LIST;
             if (this.shouldAssignRegionsWithFavoredNodes) {
-              favoredNodes = ((FavoredNodeLoadBalancer)this.balancer).getFavoredNodes(region);
+              favoredNodes = ((FavoredNodeBalancer)this.balancer).getFavoredNodes(region);
             }
             regionOpenInfos.add(new Triple<HRegionInfo, Integer,  List<ServerName>>(
               region, nodeVersion, favoredNodes));
@@ -2150,7 +2151,7 @@ public class AssignmentManager extends ZooKeeperListener {
         try {
           List<ServerName> favoredNodes = ServerName.EMPTY_SERVER_LIST;
           if (this.shouldAssignRegionsWithFavoredNodes) {
-            favoredNodes = ((FavoredNodeLoadBalancer)this.balancer).getFavoredNodes(region);
+            favoredNodes = ((FavoredNodeBalancer)this.balancer).getFavoredNodes(region);
           }
           regionOpenState = serverManager.sendRegionOpen(
               plan.getDestination(), region, versionOfOfflineNode, favoredNodes);
@@ -3206,7 +3207,7 @@ public class AssignmentManager extends ZooKeeperListener {
                 }
                 List<ServerName> favoredNodes = ServerName.EMPTY_SERVER_LIST;
                 if (shouldAssignRegionsWithFavoredNodes) {
-                  favoredNodes = ((FavoredNodeLoadBalancer)balancer).getFavoredNodes(hri);
+                  favoredNodes = ((FavoredNodeBalancer)balancer).getFavoredNodes(hri);
                 }
                 RegionOpeningState regionOpenState = serverManager.sendRegionOpen(
                   serverName, hri, -1, favoredNodes);
