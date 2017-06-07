@@ -873,7 +873,29 @@ public class RegionStates {
       final ServerName serverName, final String encodedName) {
     lastAssignments.put(encodedName, serverName);
   }
+  
+  /* BEGIN changes so that regions during split and merge using FavoredNodes */
+   void prepareAssignDaughters(HRegionInfo a, HRegionInfo b) {
+      synchronized (this) {
+        if (isRegionInState(a, State.SPLITTING_NEW)) {
+          updateRegionState(a, State.OFFLINE, null);
+        }
+        if (isRegionInState(b, State.SPLITTING_NEW)) {
+          updateRegionState(b, State.OFFLINE, null);
+        }
+      }
+    }
 
+   void prepareAssignMergedRegion(HRegionInfo mergedRegion) {
+     synchronized (this) {
+       if (isRegionInState(mergedRegion, State.MERGING_NEW)) {
+         updateRegionState(mergedRegion, State.OFFLINE, null);
+       }
+     }
+   }
+
+   /* END changes so that regions during split and merge using FavoredNodes */
+   
   void splitRegion(HRegionInfo p,
       HRegionInfo a, HRegionInfo b, ServerName sn) throws IOException {
 

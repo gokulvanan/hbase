@@ -3779,6 +3779,77 @@ public class AssignmentManager extends ZooKeeperListener {
     }
     return null;
   }
+  
+  /* BEGIN changes so that regions during split and merge using FavoredNodes */
+  public void assignDaughterRegions(
+          final HRegionInfo parentHRI,
+          final HRegionInfo daughterAHRI,
+          final HRegionInfo daughterBHRI) throws InterruptedException, IOException {
+      //Offline the parent region
+      regionOffline(parentHRI, State.SPLIT);
+
+      //Set daughter regions to offline
+      regionStates.prepareAssignDaughters(daughterAHRI, daughterBHRI);
+
+      // Assign daughter regions
+      invokeAssign(daughterAHRI);
+      invokeAssign(daughterBHRI);
+
+      Callable<Object> splitReplicasCallable = new Callable<Object>() {
+          @Override
+          public Object call() {
+              doSplittingOfReplicas(parentHRI, daughterAHRI, daughterBHRI);
+              return null;
+          }
+      };
+      threadPoolExecutorService.submit(splitReplicasCallable);
+
+      // wait for assignment completion
+      ArrayList<HRegionInfo> regionAssignSet = new ArrayList<HRegionInfo>(2);
+      regionAssignSet.add(daughterAHRI);
+      regionAssignSet.add(daughterBHRI);
+      while (!waitForAssignment(regionAssignSet, true, regionAssignSet.size(),
+              Long.MAX_VALUE)) {
+          LOG.debug("some user regions are still in transition: " + regionAssignSet);
+      }
+  }
+
+  public void assignMergedRegion(
+          final HRegionInfo mergedRegion,
+          final HRegionInfo daughterAHRI,
+          final HRegionInfo daughterBHRI) throws InterruptedException, IOException {
+      //Offline the daughter regions
+      regionOffline(daughterAHRI, State.MERGED);
+      regionOffline(daughterBHRI, State.MERGED);
+
+      //Set merged region to offline
+      regionStates.prepareAssignMergedRegion(mergedRegion);
+
+      // Assign merged region
+      invokeAssign(mergedRegion);
+
+      Callable<Object> mergeReplicasCallable = new Callable<Object>() {
+          @Override
+          public Object call() {
+              doMergingOfReplicas(mergedRegion, daughterAHRI, daughterBHRI);
+              return null;
+          }
+      };
+      threadPoolExecutorService.submit(mergeReplicasCallable);
+
+      // wait for assignment completion
+      ArrayList<HRegionInfo> regionAssignSet = new ArrayList<HRegionInfo>(1);
+      regionAssignSet.add(mergedRegion);
+      while (!waitForAssignment(regionAssignSet, true, regionAssignSet.size(), Long.MAX_VALUE)) {
+          LOG.debug("The merged region " + mergedRegion + " is still in transition. ");
+      }
+
+      regionStateListener.onRegionMerged(mergedRegion);
+  }
+  
+  /* END changes so that regions during split and merge using FavoredNodes */
+  
+
 
   private String onRegionSplit(ServerName sn, TransitionCode code,
       final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
@@ -3817,9 +3888,13 @@ public class AssignmentManager extends ZooKeeperListener {
     } else if (code == TransitionCode.SPLIT_PONR) {
       try {
         regionStates.splitRegion(p, a, b, sn);
+        assignDaughterRegions(p, a, b); //added for Favornode usage
       } catch (IOException ioe) {
         LOG.info("Failed to record split region " + p.getShortNameToLog());
         return "Failed to record the splitting in meta";
+      }catch (InterruptedException e) {
+        LOG.error("Thread interrupted in assigning daughter regions ",e);
+        return "Thread interrupted in assigning daughter regions" ;
       }
     }
     return null;
