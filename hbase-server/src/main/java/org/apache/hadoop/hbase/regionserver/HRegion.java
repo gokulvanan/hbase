@@ -6689,6 +6689,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
           (Bytes.compareTo(info.getEndKey(), 0, info.getEndKey().length, row, offset, length) > 0));
   }
 
+  //LOOKS like below method is unused code called from HMerge which is not called at all
   /**
    * Merge two HRegions.  The regions must be adjacent and must not overlap.
    *
@@ -6721,6 +6722,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     return merge(a, b);
   }
 
+  //LOOKS like below method is unused code called from HMerge which is not called at all
   /**
    * Merge two regions whether they are adjacent or not.
    *
