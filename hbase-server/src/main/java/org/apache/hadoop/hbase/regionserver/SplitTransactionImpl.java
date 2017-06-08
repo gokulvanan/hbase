@@ -47,6 +47,7 @@ import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.coordination.BaseCoordinatedStateManager;
 import org.apache.hadoop.hbase.coordination.SplitTransactionCoordination;
+import org.apache.hadoop.hbase.protobuf.generated.MasterProtos.MasterService;
 import org.apache.hadoop.hbase.protobuf.generated.RegionServerStatusProtos.RegionStateTransition.TransitionCode;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -468,41 +469,46 @@ public class SplitTransactionImpl implements SplitTransaction {
   /* package */void openDaughters(final Server server,
       final RegionServerServices services, Region a, Region b)
       throws IOException {
-    boolean stopped = server != null && server.isStopped();
-    boolean stopping = services != null && services.isStopping();
-    // TODO: Is this check needed here?
-    if (stopped || stopping) {
-      LOG.info("Not opening daughters " +
-          b.getRegionInfo().getRegionNameAsString() +
-          " and " +
-          a.getRegionInfo().getRegionNameAsString() +
-          " because stopping=" + stopping + ", stopped=" + stopped);
-    } else {
-      // Open daughters in parallel.
-      DaughterOpener aOpener = new DaughterOpener(server, (HRegion)a);
-      DaughterOpener bOpener = new DaughterOpener(server, (HRegion)b);
-      aOpener.start();
-      bOpener.start();
-      try {
-        aOpener.join();
-        if (aOpener.getException() == null) {
-          transition(SplitTransactionPhase.OPENED_REGION_A);
-        }
-        bOpener.join();
-        if (bOpener.getException() == null) {
-          transition(SplitTransactionPhase.OPENED_REGION_B);
-        }
-      } catch (InterruptedException e) {
-        throw (InterruptedIOException)new InterruptedIOException().initCause(e);
-      }
-      if (aOpener.getException() != null) {
-        throw new IOException("Failed " +
-          aOpener.getName(), aOpener.getException());
-      }
-      if (bOpener.getException() != null) {
-        throw new IOException("Failed " +
-          bOpener.getName(), bOpener.getException());
-      }
+      /*actual logic to open has been moved to AssigenmentManager 
+       on the state listener handle for SPLIT_PONR state
+       to enable assign flow for the created split regions
+       which picks the right set of favoredNodes
+      */
+//    boolean stopped = server != null && server.isStopped();
+//    boolean stopping = services != null && services.isStopping();
+//    // TODO: Is this check needed here?
+//    if (stopped || stopping) {
+//      LOG.info("Not opening daughters " +
+//          b.getRegionInfo().getRegionNameAsString() +
+//          " and " +
+//          a.getRegionInfo().getRegionNameAsString() +
+//          " because stopping=" + stopping + ", stopped=" + stopped);
+//    } else {
+//      // Open daughters in parallel.
+//      DaughterOpener aOpener = new DaughterOpener(server, (HRegion)a);
+//      DaughterOpener bOpener = new DaughterOpener(server, (HRegion)b);
+//      aOpener.start();
+//      bOpener.start();
+//      try {
+//        aOpener.join();
+//        if (aOpener.getException() == null) {
+//          transition(SplitTransactionPhase.OPENED_REGION_A);
+//        }
+//        bOpener.join();
+//        if (bOpener.getException() == null) {
+//          transition(SplitTransactionPhase.OPENED_REGION_B);
+//        }
+//      } catch (InterruptedException e) {
+//        throw (InterruptedIOException)new InterruptedIOException().initCause(e);
+//      }
+//      if (aOpener.getException() != null) {
+//        throw new IOException("Failed " +
+//          aOpener.getName(), aOpener.getException());
+//      }
+//      if (bOpener.getException() != null) {
+//        throw new IOException("Failed " +
+//          bOpener.getName(), bOpener.getException());
+//      }
       if (services != null) {
         try {
           if (useZKForAssignment) {
@@ -523,7 +529,7 @@ public class SplitTransactionImpl implements SplitTransaction {
           throw new IOException(ke);
         }
       }
-    }
+//    }
   }
 
   public PairOfSameType<Region> execute(final Server server,
