@@ -3853,16 +3853,7 @@ public class AssignmentManager extends ZooKeeperListener {
 
   private String onRegionSplit(ServerName sn, TransitionCode code,
       final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
-    String s = checkInStateForSplit(sn, p, a, b);
-    if (!org.apache.commons.lang.StringUtils.isEmpty(s)) {
-      return s;
-    }
 
-    regionStates.updateRegionState(a, State.SPLITTING_NEW, sn);
-    regionStates.updateRegionState(b, State.SPLITTING_NEW, sn);
-    regionStates.updateRegionState(p, State.SPLITTING);
-
-    if (code == TransitionCode.SPLIT) {
       if (TEST_SKIP_SPLIT_HANDLING) {
         return "Skipping split message, TEST_SKIP_SPLIT_HANDLING is set";
       }
@@ -3885,18 +3876,6 @@ public class AssignmentManager extends ZooKeeperListener {
         };
         threadPoolExecutorService.submit(splitReplicasCallable);
       }
-    } else if (code == TransitionCode.SPLIT_PONR) {
-      try {
-        regionStates.splitRegion(p, a, b, sn);
-        assignDaughterRegions(p, a, b); //added for Favornode usage
-      } catch (IOException ioe) {
-        LOG.info("Failed to record split region " + p.getShortNameToLog());
-        return "Failed to record the splitting in meta";
-      }catch (InterruptedException e) {
-        LOG.error("Thread interrupted in assigning daughter regions ",e);
-        return "Thread interrupted in assigning daughter regions" ;
-      }
-    }
     return null;
   }
 
@@ -4361,6 +4340,30 @@ public class AssignmentManager extends ZooKeeperListener {
       }
     }
   }
+  
+  private String onRegionSplitPONR(ServerName sn, TransitionCode code,
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+      String s = checkInStateForSplit(sn, p, a, b);
+      if (!org.apache.commons.lang.StringUtils.isEmpty(s)) {
+          return s;
+      }
+
+      regionStates.updateRegionState(a, State.SPLITTING_NEW, sn);
+      regionStates.updateRegionState(b, State.SPLITTING_NEW, sn);
+      regionStates.updateRegionState(p, State.SPLITTING);
+
+      try {
+          regionStates.splitRegion(p, a, b, sn);
+          assignDaughterRegions(p, a, b); //added for Favornode usage
+      } catch (IOException ioe) {
+          LOG.info("Failed to record split region " + p.getShortNameToLog());
+          return "Failed to record the splitting in meta";
+      }catch (InterruptedException e) {
+          LOG.error("Thread interrupted in assigning daughter regions ",e);
+          return "Thread interrupted in assigning daughter regions" ;
+      }
+      return null;
+  }
 
   /**
    * Try to update some region states. If the state machine prevents
@@ -4462,6 +4465,10 @@ public class AssignmentManager extends ZooKeeperListener {
       }
       break;
     case SPLIT_PONR:
+        errorMsg =
+        onRegionSplitPONR(serverName, code, hri, HRegionInfo.convert(transition.getRegionInfo(1)),
+          HRegionInfo.convert(transition.getRegionInfo(2)));
+        break;
     case SPLIT:
       errorMsg =
       onRegionSplit(serverName, code, hri, HRegionInfo.convert(transition.getRegionInfo(1)),
