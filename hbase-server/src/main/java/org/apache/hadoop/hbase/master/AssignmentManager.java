@@ -3819,8 +3819,8 @@ public class AssignmentManager extends ZooKeeperListener {
           final HRegionInfo daughterAHRI,
           final HRegionInfo daughterBHRI) throws InterruptedException, IOException {
       //Offline the daughter regions
-//      regionOffline(daughterAHRI, State.MERGED);
-//      regionOffline(daughterBHRI, State.MERGED);
+      regionOffline(daughterAHRI, State.MERGED);
+      regionOffline(daughterBHRI, State.MERGED);
 
       //Set merged region to offline
       regionStates.prepareAssignMergedRegion(mergedRegion);
@@ -3852,56 +3852,70 @@ public class AssignmentManager extends ZooKeeperListener {
 
 
   private String onRegionSplit(ServerName sn, TransitionCode code,
-      final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
 
       if (TEST_SKIP_SPLIT_HANDLING) {
-        return "Skipping split message, TEST_SKIP_SPLIT_HANDLING is set";
+          return "Skipping split message, TEST_SKIP_SPLIT_HANDLING is set";
       }
-      regionOffline(p, State.SPLIT);
-      regionOnline(a, sn, 1);
-      regionOnline(b, sn, 1);
 
-      // User could disable the table before master knows the new region.
-      if (getTableStateManager().isTableState(p.getTable(),
-          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-        invokeUnAssign(a);
-        invokeUnAssign(b);
-      } else {
-        Callable<Object> splitReplicasCallable = new Callable<Object>() {
-          @Override
-          public Object call() {
-            doSplittingOfReplicas(p, a, b);
-            return null;
-          }
-        };
-        threadPoolExecutorService.submit(splitReplicasCallable);
-      }
+      try {
+          assignDaughterRegions(p, a, b);
+      } catch (InterruptedException | IOException e) {
+          LOG.error("Failed to assign daughter regions ",e);
+          return "Failed to assign daughter regions";
+      } 
+//      regionOffline(p, State.SPLIT);
+//      regionOnline(a, sn, 1);
+//      regionOnline(b, sn, 1);
+//
+//      // User could disable the table before master knows the new region.
+//      if (getTableStateManager().isTableState(p.getTable(),
+//          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+//        invokeUnAssign(a);
+//        invokeUnAssign(b);
+//      } else {
+//        Callable<Object> splitReplicasCallable = new Callable<Object>() {
+//          @Override
+//          public Object call() {
+//            doSplittingOfReplicas(p, a, b);
+//            return null;
+//          }
+//        };
+//        threadPoolExecutorService.submit(splitReplicasCallable);
+//      }
     return null;
   }
 
   private String onRegionMerge(ServerName sn, TransitionCode code,
           final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
 
-      String encodedName = p.getEncodedName();
-      mergingRegions.remove(encodedName);
-      regionOffline(a, State.MERGED);
-      regionOffline(b, State.MERGED);
-      regionOnline(p, sn, 1);
-
-      // User could disable the table before master knows the new region.
-      if (getTableStateManager().isTableState(p.getTable(),
-              ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-          invokeUnAssign(p);
-      } else {
-          Callable<Object> mergeReplicasCallable = new Callable<Object>() {
-              @Override
-              public Object call() {
-                  doMergingOfReplicas(p, a, b);
-                  return null;
-              }
-          };
-          threadPoolExecutorService.submit(mergeReplicasCallable);
+      try {
+          assignMergedRegion(p, a, b);
+      } catch (InterruptedException | IOException e) {
+          LOG.error("Region Merge Assignment failed ",e);
+          return "Region Merge Assignment failed ";
       }
+
+//      String encodedName = p.getEncodedName();
+//      mergingRegions.remove(encodedName);
+//      regionOffline(a, State.MERGED);
+//      regionOffline(b, State.MERGED);
+//      regionOnline(p, sn, 1);
+//
+//      // User could disable the table before master knows the new region.
+//      if (getTableStateManager().isTableState(p.getTable(),
+//              ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+//          invokeUnAssign(p);
+//      } else {
+//          Callable<Object> mergeReplicasCallable = new Callable<Object>() {
+//              @Override
+//              public Object call() {
+//                  doMergingOfReplicas(p, a, b);
+//                  return null;
+//              }
+//          };
+//          threadPoolExecutorService.submit(mergeReplicasCallable);
+//      }
       return null;
   }
 
@@ -4371,13 +4385,9 @@ public class AssignmentManager extends ZooKeeperListener {
 
       try {
           regionStates.mergeRegions(p, a, b, sn);
-          assignMergedRegion(p, a, b);
       } catch (IOException ioe) {
           LOG.info("Failed to record merged region " + p.getShortNameToLog());
           return "Failed to record the merging in meta";
-      } catch (InterruptedException e) {
-          LOG.info("Failed to assign Merged Region " + p.getShortNameToLog());
-          return "Failed to assign Merged Region";
       }
       return null;
   }
@@ -4395,13 +4405,12 @@ public class AssignmentManager extends ZooKeeperListener {
 
       try {
           regionStates.splitRegion(p, a, b, sn);
-          assignDaughterRegions(p, a, b); //added for Favornode usage
       } catch (IOException ioe) {
           LOG.info("Failed to record split region " + p.getShortNameToLog());
           return "Failed to record the splitting in meta";
-      }catch (InterruptedException e) {
-          LOG.error("Thread interrupted in assigning daughter regions ",e);
-          return "Thread interrupted in assigning daughter regions" ;
+//      }catch (InterruptedException e) {
+//          LOG.error("Thread interrupted in assigning daughter regions ",e);
+//          return "Thread interrupted in assigning daughter regions" ;
       }
       return null;
   }

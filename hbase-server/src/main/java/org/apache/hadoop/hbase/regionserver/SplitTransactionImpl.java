@@ -520,11 +520,11 @@ public class SplitTransactionImpl implements SplitTransaction {
               + parent.getRegionInfo().getShortNameToLog());
           }
           // Should add it to OnlineRegions
-          services.addToOnlineRegions(b);
+//          services.addToOnlineRegions(b);
           if (useZKForAssignment) {
             services.postOpenDeployTasks(a);
           }
-          services.addToOnlineRegions(a);
+//          services.addToOnlineRegions(a);
         } catch (KeeperException ke) {
           throw new IOException(ke);
         }

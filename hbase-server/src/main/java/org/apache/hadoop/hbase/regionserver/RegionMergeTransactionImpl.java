@@ -718,7 +718,7 @@ public class RegionMergeTransactionImpl implements RegionMergeTransaction {
           throw new IOException("Failed to report merged region to master: "
             + mergedRegionInfo.getShortNameToLog());
         }
-        services.addToOnlineRegions(merged);
+//        services.addToOnlineRegions(merged);
       } catch (KeeperException ke) {
         throw new IOException(ke);
       }
