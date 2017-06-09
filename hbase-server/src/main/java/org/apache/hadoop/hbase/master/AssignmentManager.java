@@ -3852,91 +3852,71 @@ public class AssignmentManager extends ZooKeeperListener {
 
 
   private String onRegionSplit(ServerName sn, TransitionCode code,
-      final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
 
       if (TEST_SKIP_SPLIT_HANDLING) {
-        return "Skipping split message, TEST_SKIP_SPLIT_HANDLING is set";
+          return "Skipping split message, TEST_SKIP_SPLIT_HANDLING is set";
       }
-      regionOffline(p, State.SPLIT);
-      regionOnline(a, sn, 1);
-      regionOnline(b, sn, 1);
 
-      // User could disable the table before master knows the new region.
-      if (getTableStateManager().isTableState(p.getTable(),
-          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-        invokeUnAssign(a);
-        invokeUnAssign(b);
-      } else {
-        Callable<Object> splitReplicasCallable = new Callable<Object>() {
-          @Override
-          public Object call() {
-            doSplittingOfReplicas(p, a, b);
-            return null;
-          }
-        };
-        threadPoolExecutorService.submit(splitReplicasCallable);
-      }
+      try {
+          assignDaughterRegions(p, a, b);
+      } catch (InterruptedException | IOException e) {
+          LOG.error("Failed to assign daughter regions ",e);
+          return "Failed to assign daughter regions";
+      } 
+//      regionOffline(p, State.SPLIT);
+//      regionOnline(a, sn, 1);
+//      regionOnline(b, sn, 1);
+//
+//      // User could disable the table before master knows the new region.
+//      if (getTableStateManager().isTableState(p.getTable(),
+//          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+//        invokeUnAssign(a);
+//        invokeUnAssign(b);
+//      } else {
+//        Callable<Object> splitReplicasCallable = new Callable<Object>() {
+//          @Override
+//          public Object call() {
+//            doSplittingOfReplicas(p, a, b);
+//            return null;
+//          }
+//        };
+//        threadPoolExecutorService.submit(splitReplicasCallable);
+//      }
     return null;
   }
 
   private String onRegionMerge(ServerName sn, TransitionCode code,
-      final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
-    RegionState rs_p = regionStates.getRegionState(p);
-    RegionState rs_a = regionStates.getRegionState(a);
-    RegionState rs_b = regionStates.getRegionState(b);
-    if (!(rs_a.isOpenOrMergingOnServer(sn) && rs_b.isOpenOrMergingOnServer(sn)
-        && (rs_p == null || rs_p.isOpenOrMergingNewOnServer(sn)))) {
-      return "Not in state good for merge";
-    }
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
 
-    regionStates.updateRegionState(a, State.MERGING);
-    regionStates.updateRegionState(b, State.MERGING);
-    regionStates.updateRegionState(p, State.MERGING_NEW, sn);
-
-    String encodedName = p.getEncodedName();
-    if (code == TransitionCode.READY_TO_MERGE) {
-      mergingRegions.put(encodedName,
-        new PairOfSameType<HRegionInfo>(a, b));
-    } else if (code == TransitionCode.MERGED) {
-      mergingRegions.remove(encodedName);
-      regionOffline(a, State.MERGED);
-      regionOffline(b, State.MERGED);
-      regionOnline(p, sn, 1);
-
-      // User could disable the table before master knows the new region.
-      if (getTableStateManager().isTableState(p.getTable(),
-          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-        invokeUnAssign(p);
-      } else {
-        Callable<Object> mergeReplicasCallable = new Callable<Object>() {
-          @Override
-          public Object call() {
-            doMergingOfReplicas(p, a, b);
-            return null;
-          }
-        };
-        threadPoolExecutorService.submit(mergeReplicasCallable);
-      }
-    } else if (code == TransitionCode.MERGE_PONR) {
       try {
-        regionStates.mergeRegions(p, a, b, sn);
-      } catch (IOException ioe) {
-        LOG.info("Failed to record merged region " + p.getShortNameToLog());
-        return "Failed to record the merging in meta";
+          assignMergedRegion(p, a, b);
+      } catch (InterruptedException | IOException e) {
+          LOG.error("Region Merge Assignment failed ",e);
+          return "Region Merge Assignment failed ";
       }
-    } else {
-      mergingRegions.remove(encodedName);
-      regionOnline(a, sn);
-      regionOnline(b, sn);
-      regionOffline(p);
 
-      if (getTableStateManager().isTableState(p.getTable(),
-          ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
-        invokeUnAssign(a);
-        invokeUnAssign(b);
-      }
-    }
-    return null;
+//      String encodedName = p.getEncodedName();
+//      mergingRegions.remove(encodedName);
+//      regionOffline(a, State.MERGED);
+//      regionOffline(b, State.MERGED);
+//      regionOnline(p, sn, 1);
+//
+//      // User could disable the table before master knows the new region.
+//      if (getTableStateManager().isTableState(p.getTable(),
+//              ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+//          invokeUnAssign(p);
+//      } else {
+//          Callable<Object> mergeReplicasCallable = new Callable<Object>() {
+//              @Override
+//              public Object call() {
+//                  doMergingOfReplicas(p, a, b);
+//                  return null;
+//              }
+//          };
+//          threadPoolExecutorService.submit(mergeReplicasCallable);
+//      }
+      return null;
   }
 
   /**
@@ -4341,6 +4321,77 @@ public class AssignmentManager extends ZooKeeperListener {
     }
   }
   
+  private String onRegionMergeReverted(ServerName sn, TransitionCode code,
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+      RegionState rs_p = regionStates.getRegionState(p);
+      RegionState rs_a = regionStates.getRegionState(a);
+      RegionState rs_b = regionStates.getRegionState(b);
+      if (!(rs_a.isOpenOrMergingOnServer(sn) && rs_b.isOpenOrMergingOnServer(sn)
+              && (rs_p == null || rs_p.isOpenOrMergingNewOnServer(sn)))) {
+          return "Not in state good for merge";
+      }
+
+      regionStates.updateRegionState(a, State.MERGING);
+      regionStates.updateRegionState(b, State.MERGING);
+      regionStates.updateRegionState(p, State.MERGING_NEW, sn);
+
+      String encodedName = p.getEncodedName();
+      mergingRegions.remove(encodedName);
+      regionOnline(a, sn);
+      regionOnline(b, sn);
+      regionOffline(p);
+
+      if (getTableStateManager().isTableState(p.getTable(),
+              ZooKeeperProtos.Table.State.DISABLED, ZooKeeperProtos.Table.State.DISABLING)) {
+          invokeUnAssign(a);
+          invokeUnAssign(b);
+      }
+      return null;
+  }
+  
+  private String onRegionReadyToMerge(ServerName sn, TransitionCode code,
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+      RegionState rs_p = regionStates.getRegionState(p);
+      RegionState rs_a = regionStates.getRegionState(a);
+      RegionState rs_b = regionStates.getRegionState(b);
+      if (!(rs_a.isOpenOrMergingOnServer(sn) && rs_b.isOpenOrMergingOnServer(sn)
+              && (rs_p == null || rs_p.isOpenOrMergingNewOnServer(sn)))) {
+          return "Not in state good for merge";
+      }
+
+      regionStates.updateRegionState(a, State.MERGING);
+      regionStates.updateRegionState(b, State.MERGING);
+      regionStates.updateRegionState(p, State.MERGING_NEW, sn);
+
+      String encodedName = p.getEncodedName();
+      mergingRegions.put(encodedName,
+              new PairOfSameType<HRegionInfo>(a, b));
+      return null;
+  }
+  
+  private String onRegionMergePONR(ServerName sn, TransitionCode code,
+          final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
+      RegionState rs_p = regionStates.getRegionState(p);
+      RegionState rs_a = regionStates.getRegionState(a);
+      RegionState rs_b = regionStates.getRegionState(b);
+      if (!(rs_a.isOpenOrMergingOnServer(sn) && rs_b.isOpenOrMergingOnServer(sn)
+              && (rs_p == null || rs_p.isOpenOrMergingNewOnServer(sn)))) {
+          return "Not in state good for merge";
+      }
+
+      regionStates.updateRegionState(a, State.MERGING);
+      regionStates.updateRegionState(b, State.MERGING);
+      regionStates.updateRegionState(p, State.MERGING_NEW, sn);
+
+      try {
+          regionStates.mergeRegions(p, a, b, sn);
+      } catch (IOException ioe) {
+          LOG.info("Failed to record merged region " + p.getShortNameToLog());
+          return "Failed to record the merging in meta";
+      }
+      return null;
+  }
+  
   private String onRegionSplitPONR(ServerName sn, TransitionCode code,
           final HRegionInfo p, final HRegionInfo a, final HRegionInfo b) {
       String s = checkInStateForSplit(sn, p, a, b);
@@ -4354,13 +4405,12 @@ public class AssignmentManager extends ZooKeeperListener {
 
       try {
           regionStates.splitRegion(p, a, b, sn);
-          assignDaughterRegions(p, a, b); //added for Favornode usage
       } catch (IOException ioe) {
           LOG.info("Failed to record split region " + p.getShortNameToLog());
           return "Failed to record the splitting in meta";
-      }catch (InterruptedException e) {
-          LOG.error("Thread interrupted in assigning daughter regions ",e);
-          return "Thread interrupted in assigning daughter regions" ;
+//      }catch (InterruptedException e) {
+//          LOG.error("Thread interrupted in assigning daughter regions ",e);
+//          return "Thread interrupted in assigning daughter regions" ;
       }
       return null;
   }
@@ -4488,20 +4538,32 @@ public class AssignmentManager extends ZooKeeperListener {
         }
       }
       break;
-    case READY_TO_MERGE:
     case MERGE_PONR:
+        errorMsg = onRegionMergePONR(serverName, code, hri,
+                HRegionInfo.convert(transition.getRegionInfo(1)),
+                HRegionInfo.convert(transition.getRegionInfo(2)));
+        break;
+    case READY_TO_MERGE:
+        errorMsg = onRegionReadyToMerge(serverName, code, hri,
+                HRegionInfo.convert(transition.getRegionInfo(1)),
+                HRegionInfo.convert(transition.getRegionInfo(2)));
+        break;
     case MERGED:
+        errorMsg = onRegionMerge(serverName, code, hri,
+                HRegionInfo.convert(transition.getRegionInfo(1)),
+                HRegionInfo.convert(transition.getRegionInfo(2)));
+        if (org.apache.commons.lang.StringUtils.isEmpty(errorMsg)) {
+            try {
+              regionStateListener.onRegionMerged(hri);
+            } catch (IOException exp) {
+              errorMsg = StringUtils.stringifyException(exp);
+            }
+          }
+        break;
     case MERGE_REVERTED:
-      errorMsg = onRegionMerge(serverName, code, hri,
+      errorMsg = onRegionMergeReverted(serverName, code, hri,
         HRegionInfo.convert(transition.getRegionInfo(1)),
         HRegionInfo.convert(transition.getRegionInfo(2)));
-      if (code == TransitionCode.MERGED && org.apache.commons.lang.StringUtils.isEmpty(errorMsg)) {
-        try {
-          regionStateListener.onRegionMerged(hri);
-        } catch (IOException exp) {
-          errorMsg = StringUtils.stringifyException(exp);
-        }
-      }
       break;
 
     default:

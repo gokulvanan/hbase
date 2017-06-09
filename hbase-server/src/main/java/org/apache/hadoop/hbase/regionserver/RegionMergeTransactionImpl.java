@@ -695,18 +695,19 @@ public class RegionMergeTransactionImpl implements RegionMergeTransaction {
    */
   void openMergedRegion(final Server server,
       final RegionServerServices services, HRegion merged) throws IOException {
-    boolean stopped = server != null && server.isStopped();
-    boolean stopping = services != null && services.isStopping();
-    if (stopped || stopping) {
-      LOG.info("Not opening merged region  " + merged.getRegionInfo().getRegionNameAsString()
-          + " because stopping=" + stopping + ", stopped=" + stopped);
-      return;
-    }
-    HRegionInfo hri = merged.getRegionInfo();
-    LoggingProgressable reporter = server == null ? null
-        : new LoggingProgressable(hri, server.getConfiguration().getLong(
-            "hbase.regionserver.regionmerge.open.log.interval", 10000));
-    merged.openHRegion(reporter);
+      //commented to have merged region assigned from master
+//    boolean stopped = server != null && server.isStopped();
+//    boolean stopping = services != null && services.isStopping();
+//    if (stopped || stopping) {
+//      LOG.info("Not opening merged region  " + merged.getRegionInfo().getRegionNameAsString()
+//          + " because stopping=" + stopping + ", stopped=" + stopped);
+//      return;
+//    }
+//    HRegionInfo hri = merged.getRegionInfo();
+//    LoggingProgressable reporter = server == null ? null
+//        : new LoggingProgressable(hri, server.getConfiguration().getLong(
+//            "hbase.regionserver.regionmerge.open.log.interval", 10000));
+//    merged.openHRegion(reporter);
 
     if (services != null) {
       try {
@@ -717,7 +718,7 @@ public class RegionMergeTransactionImpl implements RegionMergeTransaction {
           throw new IOException("Failed to report merged region to master: "
             + mergedRegionInfo.getShortNameToLog());
         }
-        services.addToOnlineRegions(merged);
+//        services.addToOnlineRegions(merged);
       } catch (KeeperException ke) {
         throw new IOException(ke);
       }
