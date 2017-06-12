@@ -1073,7 +1073,7 @@ public class StochasticLoadBalancer extends BaseLoadBalancer {
         if (index < 0) {
           cost += 1;
         } else {
-          cost += (1 - cluster.getLocalityOfRegion(i, index));
+          cost += (1 - cluster.getLocalityOfRegion(i, serverIndex)); //fixes bug in stochastic load balancer
         }
       }
       return scale(0, max, cost);
