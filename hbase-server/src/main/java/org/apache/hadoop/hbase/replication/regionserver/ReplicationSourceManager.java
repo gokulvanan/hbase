@@ -62,6 +62,7 @@ import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
 import org.apache.hadoop.hbase.replication.ReplicationQueues;
 import org.apache.hadoop.hbase.replication.ReplicationTracker;
+import org.apache.hadoop.hbase.replication.rsgroup.RSGroupChecker;
 import org.apache.hadoop.hbase.wal.DefaultWALProvider;
 
 /**
@@ -115,9 +116,11 @@ public class ReplicationSourceManager implements ReplicationListener {
 
   private final Random rand;
 
+  private final RSGroupChecker rsgroupChecker;
 
   /**
    * Creates a replication manager and sets the watch on all the other registered region servers
+   * @param rsgroupChecker the interface for checking rsgroup
    * @param replicationQueues the interface for manipulating replication queues
    * @param replicationPeers
    * @param replicationTracker
@@ -128,12 +131,14 @@ public class ReplicationSourceManager implements ReplicationListener {
    * @param oldLogDir the directory where old logs are archived
    * @param clusterId
    */
-  public ReplicationSourceManager(final ReplicationQueues replicationQueues,
+  public ReplicationSourceManager(final RSGroupChecker rsgroupChecker, 
+		  final ReplicationQueues replicationQueues,
       final ReplicationPeers replicationPeers, final ReplicationTracker replicationTracker,
       final Configuration conf, final Server server, final FileSystem fs, final Path logDir,
       final Path oldLogDir, final UUID clusterId) {
     //CopyOnWriteArrayList is thread-safe.
     //Generally, reading is more than modifying.
+	this.rsgroupChecker = rsgroupChecker;
     this.sources = new CopyOnWriteArrayList<ReplicationSourceInterface>();
     this.replicationQueues = replicationQueues;
     this.replicationPeers = replicationPeers;
@@ -504,6 +509,11 @@ public class ReplicationSourceManager implements ReplicationListener {
    * @param rsZnode
    */
   private void transferQueues(String rsZnode) {
+	// ignore it not in same RSGroup - prevents zookeper leader election to capture this queue
+	if(rsgroupChecker.isDifferentRSGroup(rsZnode)) {
+		return;
+	}
+	
     NodeFailoverWorker transfer =
         new NodeFailoverWorker(rsZnode, this.replicationQueues, this.replicationPeers,
             this.clusterId);
@@ -636,6 +646,7 @@ public class ReplicationSourceManager implements ReplicationListener {
       if (this.rq.isThisOurZnode(rsZnode)) {
         return;
       }
+      
       // Wait a bit before transferring the queues, we may be shutting down.
       // This sleep may not be enough in some cases.
       try {
@@ -717,6 +728,7 @@ public class ReplicationSourceManager implements ReplicationListener {
         }
       }
     }
+
   }
 
   /**
