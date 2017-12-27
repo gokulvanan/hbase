@@ -57,6 +57,8 @@ import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueues;
 import org.apache.hadoop.hbase.replication.ReplicationTracker;
 import org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner;
+import org.apache.hadoop.hbase.replication.rsgroup.RSGroupChecker;
+import org.apache.hadoop.hbase.replication.rsgroup.RSGroupCheckerImpl;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.zookeeper.ZKClusterId;
 import org.apache.zookeeper.KeeperException;
@@ -135,8 +137,11 @@ public class Replication extends WALActionsListener.Base implements
       } catch (KeeperException ke) {
         throw new IOException("Could not read cluster id", ke);
       }
+      
+      RSGroupChecker rsgroupChecker = new RSGroupCheckerImpl(server);
       this.replicationManager =
-          new ReplicationSourceManager(replicationQueues, replicationPeers, replicationTracker,
+          new ReplicationSourceManager(rsgroupChecker,replicationQueues,
+        		  replicationPeers, replicationTracker,
               conf, this.server, fs, logDir, oldLogDir, clusterId);
       this.statsThreadPeriod =
           this.conf.getInt("replication.stats.thread.period.seconds", 5 * 60);
