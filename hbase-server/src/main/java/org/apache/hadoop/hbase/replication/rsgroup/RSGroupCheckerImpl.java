@@ -48,11 +48,11 @@ public class RSGroupCheckerImpl implements RSGroupChecker {
 			String host = serverNonde[0];
 			int port = Integer.parseInt(serverNonde[1]);
 			boolean isDiffGroup =  !myGroup.containsServer(HostAndPort.fromParts(host, port));
-			LOG.info("isDifferentRSGroup check result "+isDiffGroup );
+			LOG.info("rsZnode "+rsZnode+" isDifferentRSGroup check result "+isDiffGroup );
 			return isDiffGroup;
 
 		}catch(Exception e){
-			LOG.error("Got execption in checking for RSGroup hence being pessimistic and returning true to avoid incorrect movement", e);
+			LOG.error("rsZnode "+rsZnode+" Got execption in checking for RSGroup hence being pessimistic and returning true to avoid incorrect movement", e);
 			return true;
 		}
 	}
