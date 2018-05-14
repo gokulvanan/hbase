@@ -62,7 +62,7 @@ import org.apache.hadoop.hbase.replication.ReplicationPeers;
 import org.apache.hadoop.hbase.replication.ReplicationQueueInfo;
 import org.apache.hadoop.hbase.replication.ReplicationQueues;
 import org.apache.hadoop.hbase.replication.ReplicationTracker;
-import org.apache.hadoop.hbase.replication.rsgroup.RSGroupChecker;
+import org.apache.hadoop.hbase.rsgroup.RSGroupChecker;
 import org.apache.hadoop.hbase.wal.DefaultWALProvider;
 
 /**

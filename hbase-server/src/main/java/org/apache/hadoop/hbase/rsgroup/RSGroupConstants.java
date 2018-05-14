@@ -1,4 +1,4 @@
-package org.apache.hadoop.hbase.replication.rsgroup;
+package org.apache.hadoop.hbase.rsgroup;
 
 import java.util.Comparator;
 
