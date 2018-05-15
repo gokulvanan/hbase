@@ -87,8 +87,7 @@ public class ProtobufLogWriter extends WriterBase {
         "hbase.regionserver.hlog.replication", FSUtils.getDefaultReplication(fs, path));
     long blockSize = conf.getLong("hbase.regionserver.hlog.blocksize",
         FSUtils.getDefaultBlockSize(fs, path));
-    output = fs.createNonRecursive(path, overwritable, bufferSize, replication, blockSize, null);
-    output.write(ProtobufLogReader.PB_WAL_MAGIC);
+
     boolean doTagCompress = doCompress
         && conf.getBoolean(CompressionContext.ENABLE_WAL_TAGS_COMPRESSION, true);
     buildWALHeader(conf,
@@ -103,6 +102,13 @@ public class ProtobufLogWriter extends WriterBase {
       LOG.trace("Initialized protobuf WAL=" + path + ", compression=" + doCompress);
     }
   }
+
+    // Changes to keep this logic seperate to override
+    protected void createOutputStream(FileSystem fs, Path path, boolean overwritable, int bufferSize, short replication,
+            long blockSize) throws IOException {
+        output = fs.createNonRecursive(path, overwritable, bufferSize, replication, blockSize, null);
+        output.write(ProtobufLogReader.PB_WAL_MAGIC);
+    }
 
   protected void initAfterHeader(boolean doCompress) throws IOException {
     WALCellCodec codec = getCodec(conf, this.compressionContext);

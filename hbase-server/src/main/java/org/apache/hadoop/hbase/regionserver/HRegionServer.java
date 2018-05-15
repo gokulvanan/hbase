@@ -188,6 +188,7 @@ import com.google.protobuf.RpcCallback;
 import com.google.protobuf.RpcController;
 import com.google.protobuf.Service;
 import com.google.protobuf.ServiceException;
+
 import sun.misc.Signal;
 import sun.misc.SignalHandler;
 
@@ -604,6 +605,10 @@ public class HRegionServer extends HasThread implements
     putUpWebUI();
     this.walRoller = new LogRoller(this, this);
     this.choreService = new ChoreService(getServerName().toString(), true);
+
+        // Changes to set Server in DefaultWALProvider used if
+        // RSGroupFavoredNodeProtoBufLogWriter is used
+        DefaultWALProvider.setServer(this);
 
     if (!SystemUtils.IS_OS_WINDOWS) {
       Signal.handle(new Signal("HUP"), new SignalHandler() {

@@ -18,30 +18,29 @@
  */
 package org.apache.hadoop.hbase.wal;
 
-import java.io.Closeable;
-import java.io.DataInput;
-import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
-import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.Server;
 import org.apache.hadoop.hbase.ServerName;
-import org.apache.hadoop.hbase.util.FSUtils;
-
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
 // imports for things that haven't moved from regionserver.wal yet.
 import org.apache.hadoop.hbase.regionserver.wal.FSHLog;
 import org.apache.hadoop.hbase.regionserver.wal.ProtobufLogWriter;
+import org.apache.hadoop.hbase.regionserver.wal.RSGroupFavoredNodeProtobufLogWriter;
 import org.apache.hadoop.hbase.regionserver.wal.WALActionsListener;
+import org.apache.hadoop.hbase.util.FSUtils;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * A WAL Provider that returns a single thread safe WAL that writes to HDFS.
@@ -113,6 +112,24 @@ public class DefaultWALProvider implements WALProvider {
   public void shutdown() throws IOException {
     log.shutdown();
   }
+
+    // TODO (gokul) fix fomating to match hbase source code and not my defaults
+    // TODO (gokul) not the best way, but introduces minimal changes to pass
+    // Zookeeper and ServerName to ProfotBuffWriter
+    private static Server server;
+
+    // This method will be called on regionServer startup,
+    // and ideally would not need any synchornization, but since its exposed as
+    // public, adding sync checks defensively
+    public static void setServer(Server sev) {
+        if (server == null) {
+            synchronized (DefaultWALProvider.class) {
+                if (server == null) {
+                    server = sev;
+                }
+            }
+        }
+    }
 
   // should be package private; more visible for use in FSHLog
   public static final String WAL_FILE_NAME_DELIMITER = ".";
@@ -353,12 +370,24 @@ public class DefaultWALProvider implements WALProvider {
   public static Writer createWriter(final Configuration conf, final FileSystem fs, final Path path,
       final boolean overwritable)
       throws IOException {
+      
     // Configuration already does caching for the Class lookup.
     Class<? extends Writer> logWriterClass = conf.getClass("hbase.regionserver.hlog.writer.impl",
         ProtobufLogWriter.class, Writer.class);
+        if (RSGroupFavoredNodeProtobufLogWriter.class.equals(logWriterClass)) {
+            if (server == null) {
+                LOG.error(" RSGroupFavoredNodeProtobufLogWriter failure, called without server ");
+                LOG.error(" Overriding to use ProtobufLogWrier to prevent error ");
+                logWriterClass = ProtobufLogWriter.class;
+            }
+        }
     Writer writer = null;
     try {
-      writer = logWriterClass.newInstance();
+        if (RSGroupFavoredNodeProtobufLogWriter.class.equals(logWriterClass)) {
+            writer = new RSGroupFavoredNodeProtobufLogWriter(server);
+        }else {
+            writer = logWriterClass.newInstance();
+        }
       writer.init(fs, path, conf, overwritable);
       return writer;
     } catch (Exception e) {

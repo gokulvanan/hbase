@@ -65,24 +65,6 @@ public class RSGroupFetcherImpl implements RsGroupFetcher {
         return rsGroups;
     }
 
-    // // TODO(gokul) hot spotting possible here as all regions will try this
-    // // since data size is small assuming this should not be a problem
-    // // need to test and verify this case
-    // private List<RSGroupInfo> retrieveGroupListFromGroupTable() throws
-    // IOException {
-    // try (Table table = conn.getTable(RSGroupConstants.RSGROUP_TABLE_NAME_BYTES))
-    // {
-    // List<RSGroupInfo> rsGroupInfoList = Lists.newArrayList();
-    // for (Result result : table.getScanner(new Scan())) {
-    // RSGroupAdminProto.RSGroupInfo proto =
-    // RSGroupAdminProto.RSGroupInfo.parseFrom(
-    // result.getValue(RSGroupConstants.META_FAMILY_BYTES,
-    // RSGroupConstants.META_QUALIFIER_BYTES));
-    // rsGroupInfoList.add(ParseUtils.INSTANCE.rsGroupFromProto(proto));
-    // }
-    // return rsGroupInfoList;
-    // }
-    // }
 
     private List<RSGroupInfo> retrieveGroupListFromZookeeper() throws IOException {
         String groupBasePath = ZKUtil.joinZNode(watcher.baseZNode, RSGroupConstants.rsGroupZNode);
