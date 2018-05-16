@@ -120,11 +120,18 @@ public class TestSplitTransaction {
     // Start transaction.
     SplitTransactionImpl st = prepareGOOD_SPLIT_ROW();
     SplitTransactionImpl spiedUponSt = spy(st);
+        // modified to fix test case with opening daughter regions not happening in
+        // regionserver now with rsgroup
     Mockito
-        .doThrow(new MockedFailedDaughterOpen())
-        .when(spiedUponSt)
-        .openDaughterRegion((Server) Mockito.anyObject(),
-            (HRegion) Mockito.anyObject());
+    .doThrow(new IOException(new MockedFailedDaughterOpen()))
+    .when(spiedUponSt)
+    .openDaughters((Server) Mockito.anyObject(), (RegionServerServices) Mockito.anyObject(),
+                    (HRegion) Mockito.anyObject(), (HRegion) Mockito.anyObject());
+//    Mockito
+//        .doThrow(new MockedFailedDaughterOpen())
+//        .when(spiedUponSt)
+//        .openDaughterRegion((Server) Mockito.anyObject(),
+//            (HRegion) Mockito.anyObject());
 
     // Run the execute.  Look at what it returns.
     boolean expectedException = false;
