@@ -88,6 +88,7 @@ public class ProtobufLogWriter extends WriterBase {
     long blockSize = conf.getLong("hbase.regionserver.hlog.blocksize",
         FSUtils.getDefaultBlockSize(fs, path));
 
+        createOutputStream(fs, path, overwritable, bufferSize, replication, blockSize);
     boolean doTagCompress = doCompress
         && conf.getBoolean(CompressionContext.ENABLE_WAL_TAGS_COMPRESSION, true);
     buildWALHeader(conf,
