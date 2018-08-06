@@ -408,7 +408,7 @@ public abstract class AbstractTestFSWAL {
       }
       // Add any old cluster id.
       List<UUID> clusterIds = new ArrayList<>(1);
-      clusterIds.add(UUID.randomUUID());
+      clusterIds.add(TEST_UTIL.getRandomUUID());
       // Now make appends run slow.
       goslow.set(true);
       for (int i = 0; i < countPerFamily; i++) {
@@ -472,5 +472,14 @@ public abstract class AbstractTestFSWAL {
       // the WriteEntry should be null since we fail before setting it.
       assertNull(key.getWriteEntry());
     }
+  }
+
+  @Test(expected = WALClosedException.class)
+  public void testRollWriterForClosedWAL() throws IOException {
+    String testName = currentTest.getMethodName();
+    AbstractFSWAL<?> wal = newWAL(FS, CommonFSUtils.getWALRootDir(CONF), DIR.toString(), testName,
+      CONF, null, true, null, null);
+    wal.close();
+    wal.rollWriter();
   }
 }

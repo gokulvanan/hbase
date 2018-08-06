@@ -86,6 +86,7 @@ import org.apache.hadoop.hbase.regionserver.wal.FailedLogCloseException;
 import org.apache.hadoop.hbase.replication.ReplicationException;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.hadoop.hbase.snapshot.ClientSnapshotDescriptionUtils;
 import org.apache.hadoop.hbase.snapshot.HBaseSnapshotException;
 import org.apache.hadoop.hbase.snapshot.RestoreSnapshotException;
@@ -113,6 +114,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearCompac
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.ClearRegionBlockCacheResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactRegionRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.CompactionSwitchResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.FlushRegionRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos.GetRegionInfoResponse;
@@ -206,6 +209,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.Disab
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.EnableReplicationPeerResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.GetReplicationPeerConfigResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.RemoveReplicationPeerResponse;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.TransitReplicationPeerSyncReplicationStateResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.UpdateReplicationPeerConfigResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos;
 
@@ -1260,6 +1264,51 @@ public class HBaseAdmin implements Admin {
   public void compactRegion(final byte[] regionName, final byte[] columnFamily)
     throws IOException {
     compactRegion(regionName, columnFamily, false);
+  }
+
+  @Override
+  public Map<ServerName, Boolean> compactionSwitch(boolean switchState, List<String>
+      serverNamesList) throws IOException {
+    List<ServerName> serverList = new ArrayList<>();
+    if (serverNamesList.isEmpty()) {
+      ClusterMetrics status = getClusterMetrics(EnumSet.of(Option.LIVE_SERVERS));
+      serverList.addAll(status.getLiveServerMetrics().keySet());
+    } else {
+      for (String regionServerName: serverNamesList) {
+        ServerName serverName = null;
+        try {
+          serverName = ServerName.valueOf(regionServerName);
+        } catch (Exception e) {
+          throw new IllegalArgumentException(String.format("Invalid ServerName format: %s",
+              regionServerName));
+        }
+        if (serverName == null) {
+          throw new IllegalArgumentException(String.format("Null ServerName: %s",
+              regionServerName));
+        }
+        serverList.add(serverName);
+      }
+    }
+    Map<ServerName, Boolean> res = new HashMap<>(serverList.size());
+    for (ServerName serverName: serverList) {
+      boolean prev_state = switchCompact(this.connection.getAdmin(serverName), switchState);
+      res.put(serverName, prev_state);
+    }
+    return res;
+  }
+
+  private Boolean switchCompact(AdminService.BlockingInterface admin, boolean onOrOff)
+      throws IOException {
+    return executeCallable(new RpcRetryingCallable<Boolean>() {
+      @Override protected Boolean rpcCall(int callTimeout) throws Exception {
+        HBaseRpcController controller = rpcControllerFactory.newController();
+        CompactionSwitchRequest request =
+            CompactionSwitchRequest.newBuilder().setEnabled(onOrOff).build();
+        CompactionSwitchResponse compactionSwitchResponse =
+            admin.compactionSwitch(controller, request);
+        return compactionSwitchResponse.getPrevState();
+      }
+    });
   }
 
   @Override
@@ -3361,7 +3410,7 @@ public class HBaseAdmin implements Admin {
     private V result = null;
 
     private final HBaseAdmin admin;
-    private final Long procId;
+    protected final Long procId;
 
     public ProcedureFuture(final HBaseAdmin admin, final Long procId) {
       this.admin = admin;
@@ -3643,22 +3692,20 @@ public class HBaseAdmin implements Admin {
      * @return a description of the operation
      */
     protected String getDescription() {
-      return "Operation: " + getOperationType() + ", "
-          + "Table Name: " + tableName.getNameWithNamespaceInclAsString();
-
+      return "Operation: " + getOperationType() + ", " + "Table Name: " +
+        tableName.getNameWithNamespaceInclAsString() + ", procId: " + procId;
     }
 
     protected abstract class TableWaitForStateCallable implements WaitForStateCallable {
       @Override
       public void throwInterruptedException() throws InterruptedIOException {
-        throw new InterruptedIOException("Interrupted while waiting for operation: "
-            + getOperationType() + " on table: " + tableName.getNameWithNamespaceInclAsString());
+        throw new InterruptedIOException("Interrupted while waiting for " + getDescription());
       }
 
       @Override
       public void throwTimeoutException(long elapsedTime) throws TimeoutException {
-        throw new TimeoutException("The operation: " + getOperationType() + " on table: " +
-            tableName.getNameAsString() + " has not completed after " + elapsedTime + "ms");
+        throw new TimeoutException(
+          getDescription() + " has not completed after " + elapsedTime + "ms");
       }
     }
 
@@ -4011,6 +4058,30 @@ public class HBaseAdmin implements Admin {
       });
     return new ReplicationFuture(this, peerId, response.getProcId(),
       () -> "UPDATE_REPLICATION_PEER_CONFIG");
+  }
+
+  @Override
+  public void transitReplicationPeerSyncReplicationState(String peerId, SyncReplicationState state)
+      throws IOException {
+    get(transitReplicationPeerSyncReplicationStateAsync(peerId, state), this.syncWaitTimeout,
+      TimeUnit.MILLISECONDS);
+  }
+
+  @Override
+  public Future<Void> transitReplicationPeerSyncReplicationStateAsync(String peerId,
+      SyncReplicationState state) throws IOException {
+    TransitReplicationPeerSyncReplicationStateResponse response =
+        executeCallable(new MasterCallable<TransitReplicationPeerSyncReplicationStateResponse>(
+          getConnection(), getRpcControllerFactory()) {
+          @Override
+          protected TransitReplicationPeerSyncReplicationStateResponse rpcCall() throws Exception {
+            return master.transitReplicationPeerSyncReplicationState(getRpcController(),
+              RequestConverter.buildTransitReplicationPeerSyncReplicationStateRequest(peerId,
+                state));
+          }
+        });
+    return new ReplicationFuture(this, peerId, response.getProcId(),
+      () -> "TRANSIT_REPLICATION_PEER_SYNCHRONOUS_REPLICATION_STATE");
   }
 
   @Override

@@ -346,7 +346,7 @@ public class HStore implements Store, HeapSize, StoreConfigInformation, Propagat
     if (inMemoryCompaction == null) {
       inMemoryCompaction =
           MemoryCompactionPolicy.valueOf(conf.get(CompactingMemStore.COMPACTING_MEMSTORE_TYPE_KEY,
-              CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT));
+              CompactingMemStore.COMPACTING_MEMSTORE_TYPE_DEFAULT).toUpperCase());
     }
     switch (inMemoryCompaction) {
       case NONE:
@@ -556,8 +556,8 @@ public class HStore implements Store, HeapSize, StoreConfigInformation, Propagat
     }
     // initialize the thread pool for opening store files in parallel..
     ThreadPoolExecutor storeFileOpenerThreadPool =
-      this.region.getStoreFileOpenAndCloseThreadPool("StoreFileOpenerThread-" +
-          this.getColumnFamilyName());
+      this.region.getStoreFileOpenAndCloseThreadPool("StoreFileOpenerThread-"
+        + this.region.getRegionInfo().getEncodedName() + "-" + this.getColumnFamilyName());
     CompletionService<HStoreFile> completionService = new ExecutorCompletionService<>(storeFileOpenerThreadPool);
 
     int totalValidStoreFile = 0;
@@ -932,7 +932,7 @@ public class HStore implements Store, HeapSize, StoreConfigInformation, Propagat
         // initialize the thread pool for closing store files in parallel.
         ThreadPoolExecutor storeFileCloserThreadPool = this.region
             .getStoreFileOpenAndCloseThreadPool("StoreFileCloserThread-"
-                + this.getColumnFamilyName());
+              + this.region.getRegionInfo().getEncodedName() + "-" + this.getColumnFamilyName());
 
         // close each store file in parallel
         CompletionService<Void> completionService =
@@ -2605,6 +2605,11 @@ public class HStore implements Store, HeapSize, StoreConfigInformation, Propagat
             filesToRemove.add(file);
             // Only add the length if we successfully added the file to `filesToRemove`
             storeFileSizes.add(length);
+          } else {
+            LOG.info("Can't archive compacted file " + file.getPath()
+                + " because of either isCompactedAway = " + file.isCompactedAway()
+                + " or file has reference, isReferencedInReads = " + file.isReferencedInReads()
+                + ", skipping for now.");
           }
         } catch (Exception e) {
           LOG.error("Exception while trying to close the compacted store file {}",

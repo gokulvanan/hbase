@@ -248,6 +248,7 @@ enum SplitTableRegionState {
   SPLIT_TABLE_REGION_PRE_OPERATION_AFTER_META = 8;
   SPLIT_TABLE_REGION_OPEN_CHILD_REGIONS = 9;
   SPLIT_TABLE_REGION_POST_OPERATION = 10;
+  SPLIT_TABLE_REGIONS_CHECK_CLOSED_REGIONS = 11;
 }
 
 message SplitTableRegionStateData {
@@ -268,6 +269,7 @@ enum MergeTableRegionsState {
   MERGE_TABLE_REGIONS_POST_MERGE_COMMIT_OPERATION = 9;
   MERGE_TABLE_REGIONS_OPEN_MERGED_REGION = 10;
   MERGE_TABLE_REGIONS_POST_OPERATION = 11;
+  MERGE_TABLE_REGIONS_CHECK_CLOSED_REGIONS = 12;
 }
 
 message MergeTableRegionsStateData {
@@ -391,6 +393,21 @@ enum PeerModificationState {
   POST_PEER_MODIFICATION = 8;
 }
 
+enum PeerSyncReplicationStateTransitionState {
+  PRE_PEER_SYNC_REPLICATION_STATE_TRANSITION = 1;
+  SET_PEER_NEW_SYNC_REPLICATION_STATE = 2;
+  REFRESH_PEER_SYNC_REPLICATION_STATE_ON_RS_BEGIN = 3;
+  REPLAY_REMOTE_WAL_IN_PEER = 4;
+  REMOVE_ALL_REPLICATION_QUEUES_IN_PEER = 5;
+  REOPEN_ALL_REGIONS_IN_PEER = 6;
+  TRANSIT_PEER_NEW_SYNC_REPLICATION_STATE = 7;
+  REFRESH_PEER_SYNC_REPLICATION_STATE_ON_RS_END = 8;
+  SYNC_REPLICATION_SET_PEER_ENABLED = 9;
+  SYNC_REPLICATION_ENABLE_PEER_REFRESH_PEER_ON_RS = 10;
+  CREATE_DIR_FOR_REMOTE_WAL = 11;
+  POST_PEER_SYNC_REPLICATION_STATE_TRANSITION = 12;
+}
+
 message PeerModificationStateData {
   required string peer_id = 1;
 }
@@ -401,18 +418,23 @@ enum PeerModificationType {
   ENABLE_PEER = 3;
   DISABLE_PEER = 4;
   UPDATE_PEER_CONFIG = 5;
+  TRANSIT_SYNC_REPLICATION_STATE = 6;
 }
 
 message RefreshPeerStateData {
   required string peer_id = 1;
   required PeerModificationType type = 2;
   required ServerName target_server = 3;
+    /** We need multiple stages for sync replication state transition **/
+  optional uint32 stage = 4 [default = 0];
 }
 
 message RefreshPeerParameter {
   required string peer_id = 1;
   required PeerModificationType type = 2;
   required ServerName target_server = 3;
+  /** We need multiple stages for sync replication state transition **/
+  optional uint32 stage = 4 [default = 0];;
 }
 
 message PeerProcedureStateData {
@@ -456,4 +478,44 @@ enum InitMetaState {
 }
 
 message InitMetaStateData {
+}
+
+message TransitPeerSyncReplicationStateStateData {
+  /** Could be null if we fail in pre check, so optional */
+  optional SyncReplicationState fromState = 1;
+  required SyncReplicationState toState = 2;
+}
+
+enum RecoverStandbyState {
+  RENAME_SYNC_REPLICATION_WALS_DIR = 1;
+  REGISTER_PEER_TO_WORKER_STORAGE = 2;
+  DISPATCH_WALS = 3;
+  UNREGISTER_PEER_FROM_WORKER_STORAGE = 4;
+  SNAPSHOT_SYNC_REPLICATION_WALS_DIR = 5;
+}
+
+enum SyncReplicationReplayWALState {
+  ASSIGN_WORKER = 1;
+  DISPATCH_WALS_TO_WORKER = 2;
+  RELEASE_WORKER = 3;
+}
+
+message RecoverStandbyStateData {
+  required bool serial  = 1;
+}
+
+message SyncReplicationReplayWALStateData {
+  required string peer_id = 1;
+  repeated string wal = 2;
+}
+
+message SyncReplicationReplayWALRemoteStateData {
+  required string peer_id = 1;
+  repeated string wal = 2;
+  required ServerName target_server = 3;
+}
+
+message ReplaySyncReplicationWALParameter {
+  required string peer_id = 1;
+  repeated string wal = 2;
 }

@@ -843,6 +843,15 @@ public abstract class FSUtils extends CommonFSUtils {
     return frags;
   }
 
+  public static void renameFile(FileSystem fs, Path src, Path dst) throws IOException {
+    if (fs.exists(dst) && !fs.delete(dst, false)) {
+      throw new IOException("Can not delete " + dst);
+    }
+    if (!fs.rename(src, dst)) {
+      throw new IOException("Can not rename from " + src + " to " + dst);
+    }
+  }
+
   /**
    * A {@link PathFilter} that returns only regular files.
    */
@@ -937,6 +946,11 @@ public abstract class FSUtils extends CommonFSUtils {
       }
       return true;
     }
+  }
+
+  public void recoverFileLease(final FileSystem fs, final Path p, Configuration conf)
+      throws IOException {
+    recoverFileLease(fs, p, conf, null);
   }
 
   /**

@@ -19,6 +19,7 @@
 package org.apache.hadoop.hbase.regionserver;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.conf.Configuration;
@@ -146,20 +147,19 @@ public class MemStoreCompactor {
   private void doCompaction() {
     ImmutableSegment result = null;
     boolean resultSwapped = false;
-    if (isInterrupted.get()) {      // if the entire process is interrupted cancel flattening
-      return;           // the compaction also doesn't start when interrupted
-    }
-
     MemStoreCompactionStrategy.Action nextStep = strategy.getAction(versionedList);
-    boolean merge =
-        (nextStep == MemStoreCompactionStrategy.Action.MERGE ||
-            nextStep == MemStoreCompactionStrategy.Action.MERGE_COUNT_UNIQUE_KEYS);
+    boolean merge = (nextStep == MemStoreCompactionStrategy.Action.MERGE ||
+        nextStep == MemStoreCompactionStrategy.Action.MERGE_COUNT_UNIQUE_KEYS);
     try {
+      if (isInterrupted.get()) {      // if the entire process is interrupted cancel flattening
+        return;           // the compaction also doesn't start when interrupted
+      }
+
       if (nextStep == MemStoreCompactionStrategy.Action.NOOP) {
         return;
       }
-      if (nextStep == MemStoreCompactionStrategy.Action.FLATTEN ||
-          nextStep == MemStoreCompactionStrategy.Action.FLATTEN_COUNT_UNIQUE_KEYS) {
+      if (nextStep == MemStoreCompactionStrategy.Action.FLATTEN
+          || nextStep == MemStoreCompactionStrategy.Action.FLATTEN_COUNT_UNIQUE_KEYS) {
         // some Segment in the pipeline is with SkipList index, make it flat
         compactingMemStore.flattenOneSegment(versionedList.getVersion(), nextStep);
         return;
@@ -194,6 +194,7 @@ public class MemStoreCompactor {
         result.close();
       }
       releaseResources();
+      compactingMemStore.setInMemoryCompactionCompleted();
     }
 
   }
@@ -207,10 +208,14 @@ public class MemStoreCompactor {
 
     ImmutableSegment result = null;
     MemStoreSegmentsIterator iterator = null;
+    List<ImmutableSegment> segments = versionedList.getStoreSegments();
+    for (ImmutableSegment s : segments) {
+      s.waitForUpdates(); // to ensure all updates preceding s in-memory flush have completed
+    }
 
     switch (action) {
       case COMPACT:
-        iterator = new MemStoreCompactorSegmentsIterator(versionedList.getStoreSegments(),
+        iterator = new MemStoreCompactorSegmentsIterator(segments,
             compactingMemStore.getComparator(),
             compactionKVMax, compactingMemStore.getStore());
 
@@ -222,13 +227,12 @@ public class MemStoreCompactor {
       case MERGE:
       case MERGE_COUNT_UNIQUE_KEYS:
         iterator =
-            new MemStoreMergerSegmentsIterator(versionedList.getStoreSegments(),
+            new MemStoreMergerSegmentsIterator(segments,
             compactingMemStore.getComparator(), compactionKVMax);
 
         result = SegmentFactory.instance().createImmutableSegmentByMerge(
           compactingMemStore.getConfiguration(), compactingMemStore.getComparator(), iterator,
-          versionedList.getNumOfCells(), versionedList.getStoreSegments(),
-          compactingMemStore.getIndexType(), action);
+          versionedList.getNumOfCells(), segments, compactingMemStore.getIndexType(), action);
         iterator.close();
         break;
       default:

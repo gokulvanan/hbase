@@ -58,6 +58,7 @@ import javax.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.ChoreService;
 import org.apache.hadoop.hbase.ClusterId;
 import org.apache.hadoop.hbase.ClusterMetrics;
 import org.apache.hadoop.hbase.ClusterMetrics.Option;
@@ -72,7 +73,6 @@ import org.apache.hadoop.hbase.MetaTableAccessor;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.PleaseHoldException;
 import org.apache.hadoop.hbase.ReplicationPeerNotFoundException;
-import org.apache.hadoop.hbase.ScheduledChore;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableDescriptors;
 import org.apache.hadoop.hbase.TableName;
@@ -88,7 +88,6 @@ import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
 import org.apache.hadoop.hbase.client.TableState;
-import org.apache.hadoop.hbase.client.VersionInfoUtil;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorHost;
 import org.apache.hadoop.hbase.exceptions.DeserializationException;
 import org.apache.hadoop.hbase.exceptions.MergeRegionException;
@@ -133,12 +132,14 @@ import org.apache.hadoop.hbase.master.procedure.ModifyTableProcedure;
 import org.apache.hadoop.hbase.master.procedure.ProcedurePrepareLatch;
 import org.apache.hadoop.hbase.master.procedure.ServerCrashProcedure;
 import org.apache.hadoop.hbase.master.procedure.TruncateTableProcedure;
+import org.apache.hadoop.hbase.master.replication.AbstractPeerProcedure;
 import org.apache.hadoop.hbase.master.replication.AddPeerProcedure;
 import org.apache.hadoop.hbase.master.replication.DisablePeerProcedure;
 import org.apache.hadoop.hbase.master.replication.EnablePeerProcedure;
-import org.apache.hadoop.hbase.master.replication.ModifyPeerProcedure;
 import org.apache.hadoop.hbase.master.replication.RemovePeerProcedure;
 import org.apache.hadoop.hbase.master.replication.ReplicationPeerManager;
+import org.apache.hadoop.hbase.master.replication.SyncReplicationReplayWALManager;
+import org.apache.hadoop.hbase.master.replication.TransitPeerSyncReplicationStateProcedure;
 import org.apache.hadoop.hbase.master.replication.UpdatePeerConfigProcedure;
 import org.apache.hadoop.hbase.master.snapshot.SnapshotManager;
 import org.apache.hadoop.hbase.master.zksyncer.MasterAddressSyncer;
@@ -172,9 +173,11 @@ import org.apache.hadoop.hbase.regionserver.RegionSplitPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.ExploringCompactionPolicy;
 import org.apache.hadoop.hbase.regionserver.compactions.FIFOCompactionPolicy;
 import org.apache.hadoop.hbase.replication.ReplicationException;
+import org.apache.hadoop.hbase.replication.ReplicationLoadSource;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
 import org.apache.hadoop.hbase.replication.ReplicationUtils;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.hadoop.hbase.replication.master.ReplicationHFileCleaner;
 import org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner;
 import org.apache.hadoop.hbase.replication.master.ReplicationPeerConfigUpgrader;
@@ -338,6 +341,8 @@ public class HMaster extends HRegionServer implements MasterServices {
 
   // manager of replication
   private ReplicationPeerManager replicationPeerManager;
+
+  private SyncReplicationReplayWALManager syncReplicationReplayWALManager;
 
   // buffer for "fatal error" notices from region servers
   // in the cluster. This is only used for assisting
@@ -748,6 +753,7 @@ public class HMaster extends HRegionServer implements MasterServices {
     this.splitOrMergeTracker.start();
 
     this.replicationPeerManager = ReplicationPeerManager.create(zooKeeper, conf);
+    this.syncReplicationReplayWALManager = new SyncReplicationReplayWALManager(this);
 
     this.drainingServerTracker = new DrainingServerTracker(zooKeeper, this, this.serverManager);
     this.drainingServerTracker.start();
@@ -917,7 +923,7 @@ public class HMaster extends HRegionServer implements MasterServices {
     InitMetaProcedure initMetaProc = null;
     if (assignmentManager.getRegionStates().getRegionState(RegionInfoBuilder.FIRST_META_REGIONINFO)
       .isOffline()) {
-      Optional<Procedure<?>> optProc = procedureExecutor.getProcedures().stream()
+      Optional<Procedure<MasterProcedureEnv>> optProc = procedureExecutor.getProcedures().stream()
         .filter(p -> p instanceof InitMetaProcedure).findAny();
       if (optProc.isPresent()) {
         initMetaProc = (InitMetaProcedure) optProc.get();
@@ -1262,12 +1268,6 @@ public class HMaster extends HRegionServer implements MasterServices {
     }
   }
 
-  private void cancelChore(ScheduledChore chore) {
-    if (chore != null) {
-      chore.cancel();
-    }
-  }
-
   @Override
   protected void stopServiceThreads() {
     if (masterJettyServer != null) {
@@ -1278,8 +1278,12 @@ public class HMaster extends HRegionServer implements MasterServices {
         LOG.error("Failed to stop master jetty server", e);
       }
     }
-    super.stopServiceThreads();
     stopChores();
+    if (this.mobCompactThread != null) {
+      this.mobCompactThread.close();
+    }
+    super.stopServiceThreads();
+    CleanerChore.shutDownChorePool();
 
     LOG.debug("Stopping service threads");
 
@@ -1356,21 +1360,20 @@ public class HMaster extends HRegionServer implements MasterServices {
   }
 
   private void stopChores() {
-    cancelChore(this.expiredMobFileCleanerChore);
-    cancelChore(this.mobCompactChore);
-    cancelChore(this.balancerChore);
-    cancelChore(this.normalizerChore);
-    cancelChore(this.clusterStatusChore);
-    cancelChore(this.catalogJanitorChore);
-    cancelChore(this.clusterStatusPublisherChore);
-    if (this.mobCompactThread != null) {
-      this.mobCompactThread.close();
+    ChoreService choreService = getChoreService();
+    if (choreService != null) {
+      choreService.cancelChore(this.expiredMobFileCleanerChore);
+      choreService.cancelChore(this.mobCompactChore);
+      choreService.cancelChore(this.balancerChore);
+      choreService.cancelChore(this.normalizerChore);
+      choreService.cancelChore(this.clusterStatusChore);
+      choreService.cancelChore(this.catalogJanitorChore);
+      choreService.cancelChore(this.clusterStatusPublisherChore);
+      choreService.cancelChore(this.snapshotQuotaChore);
+      choreService.cancelChore(this.logCleaner);
+      choreService.cancelChore(this.hfileCleaner);
+      choreService.cancelChore(this.replicationBarrierCleaner);
     }
-    cancelChore(this.clusterStatusPublisherChore);
-    cancelChore(this.snapshotQuotaChore);
-    cancelChore(this.logCleaner);
-    cancelChore(this.hfileCleaner);
-    cancelChore(this.replicationBarrierCleaner);
   }
 
   /**
@@ -2703,11 +2706,10 @@ public class HMaster extends HRegionServer implements MasterServices {
   }
 
   @Override
-  public String getRegionServerVersion(final ServerName sn) {
-    // Will return 0 if the server is not online to prevent move system region to unknown version
-    // RS.
-    int versionNumber = this.serverManager.getServerVersion(sn);
-    return VersionInfoUtil.versionNumberToString(versionNumber);
+  public String getRegionServerVersion(ServerName sn) {
+    // Will return "0.0.0" if the server is not online to prevent move system region to unknown
+    // version RS.
+    return this.serverManager.getVersion(sn);
   }
 
   @Override
@@ -3200,7 +3202,8 @@ public class HMaster extends HRegionServer implements MasterServices {
       cpHost.preGetProcedures();
     }
 
-    final List<Procedure<?>> procList = this.procedureExecutor.getProcedures();
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    List<Procedure<?>> procList = (List) this.procedureExecutor.getProcedures();
 
     if (cpHost != null) {
       cpHost.postGetProcedures(procList);
@@ -3489,7 +3492,7 @@ public class HMaster extends HRegionServer implements MasterServices {
     return favoredNodesManager;
   }
 
-  private long executePeerProcedure(ModifyPeerProcedure procedure) throws IOException {
+  private long executePeerProcedure(AbstractPeerProcedure<?> procedure) throws IOException {
     long procId = procedureExecutor.submitProcedure(procedure);
     procedure.getLatch().await();
     return procId;
@@ -3558,6 +3561,16 @@ public class HMaster extends HRegionServer implements MasterServices {
       cpHost.postListReplicationPeers(regex);
     }
     return peers;
+  }
+
+  @Override
+  public long transitReplicationPeerSyncReplicationState(String peerId, SyncReplicationState state)
+    throws ReplicationException, IOException {
+    LOG.info(
+      getClientIdAuditPrefix() +
+        " transit current cluster state to {} in a synchronous replication peer id={}",
+      state, peerId);
+    return executePeerProcedure(new TransitPeerSyncReplicationStateProcedure(peerId, state));
   }
 
   /**
@@ -3696,6 +3709,32 @@ public class HMaster extends HRegionServer implements MasterServices {
     return replicationPeerManager;
   }
 
+  public HashMap<String, List<Pair<ServerName, ReplicationLoadSource>>>
+      getReplicationLoad(ServerName[] serverNames) {
+    List<ReplicationPeerDescription> peerList = this.getReplicationPeerManager().listPeers(null);
+    if (peerList == null) {
+      return null;
+    }
+    HashMap<String, List<Pair<ServerName, ReplicationLoadSource>>> replicationLoadSourceMap =
+        new HashMap<>(peerList.size());
+    peerList.stream()
+        .forEach(peer -> replicationLoadSourceMap.put(peer.getPeerId(), new ArrayList<>()));
+    for (ServerName serverName : serverNames) {
+      List<ReplicationLoadSource> replicationLoadSources =
+          getServerManager().getLoad(serverName).getReplicationLoadSourceList();
+      for (ReplicationLoadSource replicationLoadSource : replicationLoadSources) {
+        replicationLoadSourceMap.get(replicationLoadSource.getPeerID())
+            .add(new Pair<>(serverName, replicationLoadSource));
+      }
+    }
+    for (List<Pair<ServerName, ReplicationLoadSource>> loads : replicationLoadSourceMap.values()) {
+      if (loads.size() > 0) {
+        loads.sort(Comparator.comparingLong(load -> (-1) * load.getSecond().getReplicationLag()));
+      }
+    }
+    return replicationLoadSourceMap;
+  }
+
   /**
    * This method modifies the master's configuration in order to inject replication-related features
    */
@@ -3717,5 +3756,10 @@ public class HMaster extends HRegionServer implements MasterServices {
 
   public SnapshotQuotaObserverChore getSnapshotQuotaObserverChore() {
     return this.snapshotQuotaChore;
+  }
+
+  @Override
+  public SyncReplicationReplayWALManager getSyncReplicationReplayWALManager() {
+    return this.syncReplicationReplayWALManager;
   }
 }

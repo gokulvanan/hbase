@@ -41,6 +41,7 @@ import org.apache.hadoop.hbase.quotas.QuotaFilter;
 import org.apache.hadoop.hbase.quotas.QuotaSettings;
 import org.apache.hadoop.hbase.replication.ReplicationPeerConfig;
 import org.apache.hadoop.hbase.replication.ReplicationPeerDescription;
+import org.apache.hadoop.hbase.replication.SyncReplicationState;
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
@@ -414,6 +415,12 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   }
 
   @Override
+  public CompletableFuture<Void> transitReplicationPeerSyncReplicationState(String peerId,
+      SyncReplicationState clusterState) {
+    return wrap(rawAdmin.transitReplicationPeerSyncReplicationState(peerId, clusterState));
+  }
+
+  @Override
   public CompletableFuture<Void> appendReplicationPeerTableCFs(String peerId,
       Map<TableName, List<String>> tableCfs) {
     return wrap(rawAdmin.appendReplicationPeerTableCFs(peerId, tableCfs));
@@ -751,5 +758,11 @@ class AsyncHBaseAdmin implements AsyncAdmin {
   public CompletableFuture<Void> cloneTableSchema(TableName tableName, TableName newTableName,
       boolean preserveSplits) {
     return wrap(rawAdmin.cloneTableSchema(tableName, newTableName, preserveSplits));
+  }
+
+  @Override
+  public CompletableFuture<Map<ServerName, Boolean>> compactionSwitch(boolean switchState,
+      List<String> serverNamesList) {
+    return wrap(rawAdmin.compactionSwitch(switchState, serverNamesList));
   }
 }

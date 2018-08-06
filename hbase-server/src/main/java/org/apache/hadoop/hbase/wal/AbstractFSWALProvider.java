@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.conf.Configuration;
@@ -136,6 +137,15 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
         walCopy = wal;
         if (walCopy == null) {
           walCopy = createWAL();
+          boolean succ = false;
+          try {
+            walCopy.init();
+            succ = true;
+          } finally {
+            if (!succ) {
+              walCopy.close();
+            }
+          }
           wal = walCopy;
         }
       }
@@ -238,26 +248,30 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
     if (walName == null) {
       throw new IllegalArgumentException("The WAL path couldn't be null");
     }
-    final String[] walPathStrs = walName.toString().split("\\" + WAL_FILE_NAME_DELIMITER);
-    return Long.parseLong(walPathStrs[walPathStrs.length - (isMetaFile(walName) ? 2 : 1)]);
+    Matcher matcher = WAL_FILE_NAME_PATTERN.matcher(walName.getName());
+    if (matcher.matches()) {
+      return Long.parseLong(matcher.group(2));
+    } else {
+      throw new IllegalArgumentException(walName.getName() + " is not a valid wal file name");
+    }
   }
 
   /**
    * Pattern used to validate a WAL file name see {@link #validateWALFilename(String)} for
    * description.
    */
-  private static final Pattern pattern =
-    Pattern.compile(".*\\.\\d*(" + META_WAL_PROVIDER_ID + ")*");
+  private static final Pattern WAL_FILE_NAME_PATTERN =
+    Pattern.compile("(.+)\\.(\\d+)(\\.[0-9A-Za-z]+)?");
 
   /**
    * A WAL file name is of the format: &lt;wal-name&gt;{@link #WAL_FILE_NAME_DELIMITER}
-   * &lt;file-creation-timestamp&gt;[.meta]. provider-name is usually made up of a server-name and a
-   * provider-id
+   * &lt;file-creation-timestamp&gt;[.&lt;suffix&gt;]. provider-name is usually made up of a
+   * server-name and a provider-id
    * @param filename name of the file to validate
    * @return <tt>true</tt> if the filename matches an WAL, <tt>false</tt> otherwise
    */
   public static boolean validateWALFilename(String filename) {
-    return pattern.matcher(filename).matches();
+    return WAL_FILE_NAME_PATTERN.matcher(filename).matches();
   }
 
   /**
@@ -503,15 +517,27 @@ public abstract class AbstractFSWALProvider<T extends AbstractFSWAL<?>> implemen
     listeners.add(listener);
   }
 
+  private static String getWALNameGroupFromWALName(String name, int group) {
+    Matcher matcher = WAL_FILE_NAME_PATTERN.matcher(name);
+    if (matcher.matches()) {
+      return matcher.group(group);
+    } else {
+      throw new IllegalArgumentException(name + " is not a valid wal file name");
+    }
+  }
   /**
    * Get prefix of the log from its name, assuming WAL name in format of
    * log_prefix.filenumber.log_suffix
    * @param name Name of the WAL to parse
    * @return prefix of the log
+   * @throws IllegalArgumentException if the name passed in is not a valid wal file name
    * @see AbstractFSWAL#getCurrentFileName()
    */
   public static String getWALPrefixFromWALName(String name) {
-    int endIndex = name.replaceAll(META_WAL_PROVIDER_ID, "").lastIndexOf(".");
-    return name.substring(0, endIndex);
+    return getWALNameGroupFromWALName(name, 1);
+  }
+
+  public static long getWALStartTimeFromWALName(String name) {
+    return Long.parseLong(getWALNameGroupFromWALName(name, 2));
   }
 }

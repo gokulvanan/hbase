@@ -363,8 +363,9 @@ public abstract class AbstractFSWAL<W extends WriterBase> implements WAL {
     }
     // Now that it exists, set the storage policy for the entire directory of wal files related to
     // this FSHLog instance
-    CommonFSUtils.setStoragePolicy(fs, conf, this.walDir, HConstants.WAL_STORAGE_POLICY,
-      HConstants.DEFAULT_WAL_STORAGE_POLICY);
+    String storagePolicy =
+        conf.get(HConstants.WAL_STORAGE_POLICY, HConstants.DEFAULT_WAL_STORAGE_POLICY);
+    CommonFSUtils.setStoragePolicy(fs, this.walDir, storagePolicy);
     this.walFileSuffix = (suffix == null) ? "" : URLEncoder.encode(suffix, "UTF8");
     this.prefixPathStr = new Path(walDir, walFilePrefix + WAL_FILE_NAME_DELIMITER).toString();
 
@@ -432,6 +433,13 @@ public abstract class AbstractFSWAL<W extends WriterBase> implements WAL {
     // Presize our map of SyncFutures by handler objects.
     this.syncFuturesByHandler = new ConcurrentHashMap<>(maxHandlersCount);
     this.implClassName = getClass().getSimpleName();
+  }
+
+  /**
+   * Used to initialize the WAL. Usually just call rollWriter to create the first log writer.
+   */
+  public void init() throws IOException {
+    rollWriter();
   }
 
   @Override
@@ -747,15 +755,14 @@ public abstract class AbstractFSWAL<W extends WriterBase> implements WAL {
   public byte[][] rollWriter(boolean force) throws FailedLogCloseException, IOException {
     rollWriterLock.lock();
     try {
+      if (this.closed) {
+        throw new WALClosedException("WAL has been closed");
+      }
       // Return if nothing to flush.
       if (!force && this.writer != null && this.numEntries.get() <= 0) {
         return null;
       }
       byte[][] regionsToFlush = null;
-      if (this.closed) {
-        LOG.debug("WAL closed. Skipping rolling of writer");
-        return regionsToFlush;
-      }
       try (TraceScope scope = TraceUtil.createTrace("FSHLog.rollWriter")) {
         Path oldPath = getOldPath();
         Path newPath = getNewPath();

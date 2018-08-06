@@ -23,6 +23,9 @@ require 'hbase/hbase'
 require 'hbase/table'
 
 include HBaseConstants
+include Java
+
+java_import org.apache.hadoop.hbase.replication.SyncReplicationState
 
 module Hbase
   class ReplicationAdminTest < Test::Unit::TestCase
@@ -92,6 +95,26 @@ module Hbase
       assert_equal(@peer_id, peer.getPeerId)
       assert_equal(cluster_key, peer.getPeerConfig.getClusterKey)
       assert_equal(true, peer.getPeerConfig.replicateAllUserTables)
+
+      # cleanup for future tests
+      command(:remove_peer, @peer_id)
+    end
+
+    define_test "add_peer: remote wal dir" do
+      cluster_key = "server1.cie.com:2181:/hbase"
+      remote_wal_dir = "hdfs://srv1:9999/hbase"
+      table_cfs = { "ns3:table1" => [], "ns3:table2" => [],
+        "ns3:table3" => [] }
+      args = { CLUSTER_KEY => cluster_key, REMOTE_WAL_DIR => remote_wal_dir,
+        TABLE_CFS => table_cfs}
+      command(:add_peer, @peer_id, args)
+
+      assert_equal(1, command(:list_peers).length)
+      peer = command(:list_peers).get(0)
+      assert_equal(@peer_id, peer.getPeerId)
+      assert_equal(cluster_key, peer.getPeerConfig.getClusterKey)
+      assert_equal(remote_wal_dir, peer.getPeerConfig.getRemoteWALDir)
+      assert_tablecfs_equal(table_cfs, peer.getPeerConfig.getTableCFsMap())
 
       # cleanup for future tests
       command(:remove_peer, @peer_id)
@@ -494,6 +517,37 @@ module Hbase
       assert_equal(2097152, peer_config.get_bandwidth)
 
       #cleanup
+      command(:remove_peer, @peer_id)
+    end
+
+    define_test "transit_peer_sync_replication_state: test" do
+      cluster_key = "server1.cie.com:2181:/hbase"
+      remote_wal_dir = "hdfs://srv1:9999/hbase"
+      table_cfs = { "ns3:table1" => [], "ns3:table2" => [],
+        "ns3:table3" => [] }
+      args = { CLUSTER_KEY => cluster_key, REMOTE_WAL_DIR => remote_wal_dir,
+        TABLE_CFS => table_cfs}
+      command(:add_peer, @peer_id, args)
+
+      assert_equal(1, command(:list_peers).length)
+      peer = command(:list_peers).get(0)
+      assert_equal(@peer_id, peer.getPeerId)
+      assert_equal(SyncReplicationState::DOWNGRADE_ACTIVE, peer.getSyncReplicationState)
+
+      command(:transit_peer_sync_replication_state, @peer_id, 'STANDBY')
+      assert_equal(1, command(:list_peers).length)
+      peer = command(:list_peers).get(0)
+      assert_equal(@peer_id, peer.getPeerId)
+      assert_equal(SyncReplicationState::STANDBY, peer.getSyncReplicationState)
+
+      # need to transit back otherwise we can not remove the peer
+      command(:transit_peer_sync_replication_state, @peer_id, 'DOWNGRADE_ACTIVE')
+      assert_equal(1, command(:list_peers).length)
+      peer = command(:list_peers).get(0)
+      assert_equal(@peer_id, peer.getPeerId)
+      assert_equal(SyncReplicationState::DOWNGRADE_ACTIVE, peer.getSyncReplicationState)
+
+      # cleanup for future tests
       command(:remove_peer, @peer_id)
     end
 

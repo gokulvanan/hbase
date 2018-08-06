@@ -25,8 +25,6 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -68,6 +66,7 @@ import org.apache.hadoop.hbase.io.hfile.CacheableDeserializerIdManager;
 import org.apache.hadoop.hbase.io.hfile.CachedBlock;
 import org.apache.hadoop.hbase.io.hfile.HFileBlock;
 import org.apache.hadoop.hbase.nio.ByteBuff;
+import org.apache.hadoop.hbase.protobuf.ProtobufMagic;
 import org.apache.hadoop.hbase.util.EnvironmentEdgeManager;
 import org.apache.hadoop.hbase.util.HasThread;
 import org.apache.hadoop.hbase.util.IdReadWriteLock;
@@ -81,6 +80,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.hbase.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hbase.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hbase.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.BucketCacheProtos;
 
 /**
  * BucketCache uses {@link BucketAllocator} to allocate/free blocks, and uses
@@ -163,8 +163,6 @@ public class BucketCache implements BlockCache, HeapSize {
   /** Volatile boolean to track if free space is in process or not */
   private volatile boolean freeInProgress = false;
   private final Lock freeSpaceLock = new ReentrantLock();
-
-  private UniqueIndexMap<Integer> deserialiserMap = new UniqueIndexMap<>();
 
   private final LongAdder realCacheSize = new LongAdder();
   private final LongAdder heapSize = new LongAdder();
@@ -299,10 +297,7 @@ public class BucketCache implements BlockCache, HeapSize {
       try {
         retrieveFromFile(bucketSizes);
       } catch (IOException ioex) {
-        LOG.error("Can't restore from file because of", ioex);
-      } catch (ClassNotFoundException cnfe) {
-        LOG.error("Can't restore from file in rebuild because can't deserialise",cnfe);
-        throw new RuntimeException(cnfe);
+        LOG.error("Can't restore from file[" + persistencePath + "] because of ", ioex);
       }
     }
     final String threadName = Thread.currentThread().getName();
@@ -418,42 +413,35 @@ public class BucketCache implements BlockCache, HeapSize {
    * @param inMemory if block is in-memory
    * @param wait if true, blocking wait when queue is full
    */
-  public void cacheBlockWithWait(BlockCacheKey cacheKey, Cacheable cachedItem, boolean inMemory,
+  private void cacheBlockWithWait(BlockCacheKey cacheKey, Cacheable cachedItem, boolean inMemory,
       boolean wait) {
-    if (LOG.isTraceEnabled()) LOG.trace("Caching key=" + cacheKey + ", item=" + cachedItem);
+    if (cacheEnabled) {
+      if (backingMap.containsKey(cacheKey) || ramCache.containsKey(cacheKey)) {
+        if (BlockCacheUtil.shouldReplaceExistingCacheBlock(this, cacheKey, cachedItem)) {
+          cacheBlockWithWaitInternal(cacheKey, cachedItem, inMemory, wait);
+        }
+      } else {
+        cacheBlockWithWaitInternal(cacheKey, cachedItem, inMemory, wait);
+      }
+    }
+  }
+
+  private void cacheBlockWithWaitInternal(BlockCacheKey cacheKey, Cacheable cachedItem,
+      boolean inMemory, boolean wait) {
     if (!cacheEnabled) {
       return;
     }
-
-    if (backingMap.containsKey(cacheKey) || ramCache.containsKey(cacheKey)) {
-      Cacheable existingBlock = getBlock(cacheKey, false, false, false);
-
-      try {
-        int comparison = BlockCacheUtil.validateBlockAddition(existingBlock, cachedItem, cacheKey);
-        if (comparison != 0) {
-          if (comparison < 0) {
-            LOG.warn("Cached block contents differ by nextBlockOnDiskSize. Keeping cached block.");
-            return;
-          } else {
-            LOG.warn("Cached block contents differ by nextBlockOnDiskSize. Caching new block.");
-          }
-        } else {
-          String msg = "Caching an already cached block: " + cacheKey;
-          msg += ". This is harmless and can happen in rare cases (see HBASE-8547)";
-          LOG.warn(msg);
-          return;
-        }
-      } finally {
-        // return the block since we need to decrement the count
-        returnBlock(cacheKey, existingBlock);
-      }
-    }
-
-    /*
-     * Stuff the entry into the RAM cache so it can get drained to the persistent store
-     */
+    LOG.trace("Caching key={}, item={}", cacheKey, cachedItem);
+    // Stuff the entry into the RAM cache so it can get drained to the persistent store
     RAMQueueEntry re =
         new RAMQueueEntry(cacheKey, cachedItem, accessCount.incrementAndGet(), inMemory);
+    /**
+     * Don't use ramCache.put(cacheKey, re) here. because there may be a existing entry with same
+     * key in ramCache, the heap size of bucket cache need to update if replacing entry from
+     * ramCache. But WriterThread will also remove entry from ramCache and update heap size, if
+     * using ramCache.put(), It's possible that the removed entry in WriterThread is not the correct
+     * one, then the heap size will mess up (HBASE-20789)
+     */
     if (ramCache.putIfAbsent(cacheKey, re) != null) {
       return;
     }
@@ -518,7 +506,7 @@ public class BucketCache implements BlockCache, HeapSize {
             LOG.trace("Read offset=" + bucketEntry.offset() + ", len=" + len);
           }
           Cacheable cachedBlock = ioEngine.read(bucketEntry.offset(), len,
-              bucketEntry.deserializerReference(this.deserialiserMap));
+              bucketEntry.deserializerReference());
           long timeTaken = System.nanoTime() - start;
           if (updateCacheMetrics) {
             cacheStats.hit(caching, key.isPrimary(), key.getBlockType());
@@ -937,6 +925,31 @@ public class BucketCache implements BlockCache, HeapSize {
     }
 
     /**
+     * Put the new bucket entry into backingMap. Notice that we are allowed to replace the existing
+     * cache with a new block for the same cache key. there's a corner case: one thread cache a
+     * block in ramCache, copy to io-engine and add a bucket entry to backingMap. Caching another
+     * new block with the same cache key do the same thing for the same cache key, so if not evict
+     * the previous bucket entry, then memory leak happen because the previous bucketEntry is gone
+     * but the bucketAllocator do not free its memory.
+     * @see BlockCacheUtil#shouldReplaceExistingCacheBlock(BlockCache blockCache,BlockCacheKey
+     *      cacheKey, Cacheable newBlock)
+     * @param key Block cache key
+     * @param bucketEntry Bucket entry to put into backingMap.
+     */
+    private void putIntoBackingMap(BlockCacheKey key, BucketEntry bucketEntry) {
+      BucketEntry previousEntry = backingMap.put(key, bucketEntry);
+      if (previousEntry != null && previousEntry != bucketEntry) {
+        ReentrantReadWriteLock lock = offsetLock.getLock(previousEntry.offset());
+        lock.writeLock().lock();
+        try {
+          blockEvicted(key, previousEntry, false);
+        } finally {
+          lock.writeLock().unlock();
+        }
+      }
+    }
+
+    /**
      * Flush the entries in ramCache to IOEngine and add bucket entry to backingMap.
      * Process all that are passed in even if failure being sure to remove from ramCache else we'll
      * never undo the references and we'll OOME.
@@ -970,7 +983,7 @@ public class BucketCache implements BlockCache, HeapSize {
             continue;
           }
           BucketEntry bucketEntry =
-            re.writeToCache(ioEngine, bucketAllocator, deserialiserMap, realCacheSize);
+            re.writeToCache(ioEngine, bucketAllocator, realCacheSize);
           // Successfully added.  Up index and add bucketEntry. Clear io exceptions.
           bucketEntries[index] = bucketEntry;
           if (ioErrorStartTime > 0) {
@@ -1017,7 +1030,7 @@ public class BucketCache implements BlockCache, HeapSize {
         BlockCacheKey key = entries.get(i).getKey();
         // Only add if non-null entry.
         if (bucketEntries[i] != null) {
-          backingMap.put(key, bucketEntries[i]);
+          putIntoBackingMap(key, bucketEntries[i]);
         }
         // Always remove from ramCache even if we failed adding it to the block cache above.
         RAMQueueEntry ramCacheEntry = ramCache.remove(key);
@@ -1065,73 +1078,96 @@ public class BucketCache implements BlockCache, HeapSize {
     return receptacle;
   }
 
+  /**
+   * @see #retrieveFromFile(int[])
+   */
   private void persistToFile() throws IOException {
     assert !cacheEnabled;
-    FileOutputStream fos = null;
-    ObjectOutputStream oos = null;
-    try {
-      if (!ioEngine.isPersistent()) {
-        throw new IOException("Attempt to persist non-persistent cache mappings!");
-      }
-      fos = new FileOutputStream(persistencePath, false);
-      oos = new ObjectOutputStream(fos);
-      oos.writeLong(cacheCapacity);
-      oos.writeUTF(ioEngine.getClass().getName());
-      oos.writeUTF(backingMap.getClass().getName());
-      oos.writeObject(deserialiserMap);
-      oos.writeObject(backingMap);
-    } finally {
-      if (oos != null) oos.close();
-      if (fos != null) fos.close();
+    if (!ioEngine.isPersistent()) {
+      throw new IOException("Attempt to persist non-persistent cache mappings!");
+    }
+    try (FileOutputStream fos = new FileOutputStream(persistencePath, false)) {
+      fos.write(ProtobufMagic.PB_MAGIC);
+      BucketProtoUtils.toPB(this).writeDelimitedTo(fos);
     }
   }
 
-  @SuppressWarnings("unchecked")
-  private void retrieveFromFile(int[] bucketSizes) throws IOException, BucketAllocatorException,
-      ClassNotFoundException {
+  /**
+   * @see #persistToFile()
+   */
+  private void retrieveFromFile(int[] bucketSizes) throws IOException {
     File persistenceFile = new File(persistencePath);
     if (!persistenceFile.exists()) {
       return;
     }
     assert !cacheEnabled;
-    FileInputStream fis = null;
-    ObjectInputStream ois = null;
-    try {
-      if (!ioEngine.isPersistent())
-        throw new IOException(
-            "Attempt to restore non-persistent cache mappings!");
-      fis = new FileInputStream(persistencePath);
-      ois = new ObjectInputStream(fis);
-      long capacitySize = ois.readLong();
-      if (capacitySize != cacheCapacity)
-        throw new IOException("Mismatched cache capacity:"
-            + StringUtils.byteDesc(capacitySize) + ", expected: "
-            + StringUtils.byteDesc(cacheCapacity));
-      String ioclass = ois.readUTF();
-      String mapclass = ois.readUTF();
-      if (!ioEngine.getClass().getName().equals(ioclass))
-        throw new IOException("Class name for IO engine mismatch: " + ioclass
-            + ", expected:" + ioEngine.getClass().getName());
-      if (!backingMap.getClass().getName().equals(mapclass))
-        throw new IOException("Class name for cache map mismatch: " + mapclass
-            + ", expected:" + backingMap.getClass().getName());
-      UniqueIndexMap<Integer> deserMap = (UniqueIndexMap<Integer>) ois
-          .readObject();
-      ConcurrentHashMap<BlockCacheKey, BucketEntry> backingMapFromFile =
-          (ConcurrentHashMap<BlockCacheKey, BucketEntry>) ois.readObject();
-      BucketAllocator allocator = new BucketAllocator(cacheCapacity, bucketSizes,
-          backingMapFromFile, realCacheSize);
-      bucketAllocator = allocator;
-      deserialiserMap = deserMap;
-      backingMap = backingMapFromFile;
-    } finally {
-      if (ois != null) ois.close();
-      if (fis != null) fis.close();
-      if (!persistenceFile.delete()) {
-        throw new IOException("Failed deleting persistence file "
-            + persistenceFile.getAbsolutePath());
+
+    try (FileInputStream in = deleteFileOnClose(persistenceFile)) {
+      int pblen = ProtobufMagic.lengthOfPBMagic();
+      byte[] pbuf = new byte[pblen];
+      int read = in.read(pbuf);
+      if (read != pblen) {
+        throw new IOException("Incorrect number of bytes read while checking for protobuf magic "
+            + "number. Requested=" + pblen + ", Received= " + read + ", File=" + persistencePath);
       }
+      if (! ProtobufMagic.isPBMagicPrefix(pbuf)) {
+        // In 3.0 we have enough flexibility to dump the old cache data.
+        // TODO: In 2.x line, this might need to be filled in to support reading the old format
+        throw new IOException("Persistence file does not start with protobuf magic number. " +
+            persistencePath);
+      }
+      parsePB(BucketCacheProtos.BucketCacheEntry.parseDelimitedFrom(in));
+      bucketAllocator = new BucketAllocator(cacheCapacity, bucketSizes, backingMap, realCacheSize);
     }
+  }
+
+  /**
+   * Create an input stream that deletes the file after reading it. Use in try-with-resources to
+   * avoid this pattern where an exception thrown from a finally block may mask earlier exceptions:
+   * <pre>
+   *   File f = ...
+   *   try (FileInputStream fis = new FileInputStream(f)) {
+   *     // use the input stream
+   *   } finally {
+   *     if (!f.delete()) throw new IOException("failed to delete");
+   *   }
+   * </pre>
+   * @param file the file to read and delete
+   * @return a FileInputStream for the given file
+   * @throws IOException if there is a problem creating the stream
+   */
+  private FileInputStream deleteFileOnClose(final File file) throws IOException {
+    return new FileInputStream(file) {
+      @Override
+      public void close() throws IOException {
+        super.close();
+        if (!file.delete()) {
+          throw new IOException("Failed deleting persistence file " + file.getAbsolutePath());
+        }
+      }
+    };
+  }
+
+  private void verifyCapacityAndClasses(long capacitySize, String ioclass, String mapclass)
+      throws IOException {
+    if (capacitySize != cacheCapacity) {
+      throw new IOException("Mismatched cache capacity:"
+          + StringUtils.byteDesc(capacitySize) + ", expected: "
+          + StringUtils.byteDesc(cacheCapacity));
+    }
+    if (!ioEngine.getClass().getName().equals(ioclass)) {
+      throw new IOException("Class name for IO engine mismatch: " + ioclass
+          + ", expected:" + ioEngine.getClass().getName());
+    }
+    if (!backingMap.getClass().getName().equals(mapclass)) {
+      throw new IOException("Class name for cache map mismatch: " + mapclass
+          + ", expected:" + backingMap.getClass().getName());
+    }
+  }
+
+  private void parsePB(BucketCacheProtos.BucketCacheEntry proto) throws IOException {
+    verifyCapacityAndClasses(proto.getCacheCapacity(), proto.getIoClass(), proto.getMapClass());
+    backingMap = BucketProtoUtils.fromPB(proto.getDeserializersMap(), proto.getBackingMap());
   }
 
   /**
@@ -1269,18 +1305,19 @@ public class BucketCache implements BlockCache, HeapSize {
     private static final long serialVersionUID = -6741504807982257534L;
 
     // access counter comparator, descending order
-    static final Comparator<BucketEntry> COMPARATOR = new Comparator<BucketCache.BucketEntry>() {
-
-      @Override
-      public int compare(BucketEntry o1, BucketEntry o2) {
-        return Long.compare(o2.accessCounter, o1.accessCounter);
-      }
-    };
+    static final Comparator<BucketEntry> COMPARATOR = Comparator
+        .comparingLong(BucketEntry::getAccessCounter).reversed();
 
     private int offsetBase;
     private int length;
     private byte offset1;
+
+    /**
+     * The index of the deserializer that can deserialize this BucketEntry content.
+     * See {@link CacheableDeserializerIdManager} for hosting of index to serializers.
+     */
     byte deserialiserIndex;
+
     private volatile long accessCounter;
     private BlockPriority priority;
 
@@ -1317,17 +1354,16 @@ public class BucketCache implements BlockCache, HeapSize {
       return length;
     }
 
-    protected CacheableDeserializer<Cacheable> deserializerReference(
-        UniqueIndexMap<Integer> deserialiserMap) {
-      return CacheableDeserializerIdManager.getDeserializer(deserialiserMap
-          .unmap(deserialiserIndex));
+    protected CacheableDeserializer<Cacheable> deserializerReference() {
+      return CacheableDeserializerIdManager.getDeserializer(deserialiserIndex);
     }
 
-    protected void setDeserialiserReference(
-        CacheableDeserializer<Cacheable> deserializer,
-        UniqueIndexMap<Integer> deserialiserMap) {
-      this.deserialiserIndex = ((byte) deserialiserMap.map(deserializer
-          .getDeserialiserIdentifier()));
+    protected void setDeserialiserReference(CacheableDeserializer<Cacheable> deserializer) {
+      this.deserialiserIndex = (byte) deserializer.getDeserialiserIdentifier();
+    }
+
+    public long getAccessCounter() {
+      return accessCounter;
     }
 
     /**
@@ -1486,7 +1522,6 @@ public class BucketCache implements BlockCache, HeapSize {
 
     public BucketEntry writeToCache(final IOEngine ioEngine,
         final BucketAllocator bucketAllocator,
-        final UniqueIndexMap<Integer> deserialiserMap,
         final LongAdder realCacheSize) throws CacheFullException, IOException,
         BucketAllocatorException {
       int len = data.getSerializedLength();
@@ -1498,7 +1533,7 @@ public class BucketCache implements BlockCache, HeapSize {
               ? new UnsafeSharedMemoryBucketEntry(offset, len, accessCounter, inMemory)
               : new SharedMemoryBucketEntry(offset, len, accessCounter, inMemory)
           : new BucketEntry(offset, len, accessCounter, inMemory);
-      bucketEntry.setDeserialiserReference(data.getDeserializer(), deserialiserMap);
+      bucketEntry.setDeserialiserReference(data.getDeserializer());
       try {
         if (data instanceof HFileBlock) {
           // If an instance of HFileBlock, save on some allocations.

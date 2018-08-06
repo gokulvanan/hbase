@@ -1738,15 +1738,15 @@ public class TestHStore {
     @Override
     public boolean start() throws IOException {
       boolean isFirst = RUNNER_COUNT.getAndIncrement() == 0;
-      boolean rval = super.start();
       if (isFirst) {
         try {
           START_COMPACTOR_LATCH.await();
+          return super.start();
         } catch (InterruptedException ex) {
           throw new RuntimeException(ex);
         }
       }
-      return rval;
+      return super.start();
     }
   }
 
@@ -1765,8 +1765,8 @@ public class TestHStore {
     }
 
     @Override
-    protected boolean shouldFlushInMemory() {
-      boolean rval = super.shouldFlushInMemory();
+    protected boolean setInMemoryCompactionFlag() {
+      boolean rval = super.setInMemoryCompactionFlag();
       if (rval) {
         RUNNER_COUNT.incrementAndGet();
         if (LOG.isDebugEnabled()) {

@@ -216,8 +216,9 @@ public class WALProcedureStore extends ProcedureStoreBase {
       }
     }
     // Now that it exists, set the log policy
-    CommonFSUtils.setStoragePolicy(fs, conf, walDir, HConstants.WAL_STORAGE_POLICY,
-      HConstants.DEFAULT_WAL_STORAGE_POLICY);
+    String storagePolicy =
+        conf.get(HConstants.WAL_STORAGE_POLICY, HConstants.DEFAULT_WAL_STORAGE_POLICY);
+    CommonFSUtils.setStoragePolicy(fs, walDir, storagePolicy);
 
     // Create archive dir up front. Rename won't work w/o it up on HDFS.
     if (this.walArchiveDir != null && !this.fs.exists(this.walArchiveDir)) {
@@ -1027,7 +1028,7 @@ public class WALProcedureStore extends ProcedureStoreBase {
     long startPos = -1;
     newLogFile = getLogFilePath(logId);
     try {
-      newStream = fs.create(newLogFile, false);
+      newStream = CommonFSUtils.createForWal(fs, newLogFile, false);
     } catch (FileAlreadyExistsException e) {
       LOG.error("Log file with id=" + logId + " already exists", e);
       return false;

@@ -109,12 +109,6 @@ public abstract class ModifyPeerProcedure extends AbstractPeerProcedure<PeerModi
     throw new UnsupportedOperationException();
   }
 
-  private void refreshPeer(MasterProcedureEnv env, PeerOperationType type) {
-    addChildProcedure(env.getMasterServices().getServerManager().getOnlineServersList().stream()
-      .map(sn -> new RefreshPeerProcedure(peerId, type, sn))
-      .toArray(RefreshPeerProcedure[]::new));
-  }
-
   protected ReplicationPeerConfig getOldPeerConfig() {
     return null;
   }
@@ -325,17 +319,6 @@ public abstract class ModifyPeerProcedure extends AbstractPeerProcedure<PeerModi
       default:
         throw new UnsupportedOperationException("unhandled state=" + state);
     }
-  }
-
-  @Override
-  protected void rollbackState(MasterProcedureEnv env, PeerModificationState state)
-      throws IOException, InterruptedException {
-    if (state == PeerModificationState.PRE_PEER_MODIFICATION) {
-      // actually the peer related operations has no rollback, but if we haven't done any
-      // modifications on the peer storage yet, we can just return.
-      return;
-    }
-    throw new UnsupportedOperationException();
   }
 
   @Override

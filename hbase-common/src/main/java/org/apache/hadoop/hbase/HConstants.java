@@ -530,9 +530,14 @@ public final class HConstants {
   // Other constants
 
   /**
-   * An empty instance.
+   * An empty byte array instance.
    */
   public static final byte [] EMPTY_BYTE_ARRAY = new byte [0];
+
+  /**
+   * An empty string instance.
+   */
+  public static final String EMPTY_STRING = "";
 
   public static final ByteBuffer EMPTY_BYTE_BUFFER = ByteBuffer.wrap(EMPTY_BYTE_ARRAY);
 
@@ -1072,7 +1077,13 @@ public final class HConstants {
    * Valid values are: HOT, COLD, WARM, ALL_SSD, ONE_SSD, LAZY_PERSIST
    * See http://hadoop.apache.org/docs/r2.7.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html*/
   public static final String WAL_STORAGE_POLICY = "hbase.wal.storage.policy";
-  public static final String DEFAULT_WAL_STORAGE_POLICY = "HOT";
+  /**
+   * "NONE" is not a valid storage policy and means we defer the policy to HDFS. @see
+   * <a href="https://issues.apache.org/jira/browse/HBASE-20691">HBASE-20691</a>
+   */
+  public static final String DEFER_TO_HDFS_STORAGE_POLICY = "NONE";
+  /** By default we defer the WAL storage policy to HDFS */
+  public static final String DEFAULT_WAL_STORAGE_POLICY = DEFER_TO_HDFS_STORAGE_POLICY;
 
   /** Region in Transition metrics threshold time */
   public static final String METRICS_RIT_STUCK_WARNING_THRESHOLD =
@@ -1341,6 +1352,12 @@ public final class HConstants {
 
   /** Config key for hbase temporary directory in hdfs */
   public static final String TEMPORARY_FS_DIRECTORY_KEY = "hbase.fs.tmp.dir";
+
+  /**
+   * Don't use it! This'll get you the wrong path in a secure cluster.
+   * Use FileSystem.getHomeDirectory() or
+   * "/user/" + UserGroupInformation.getCurrentUser().getShortUserName()
+   */
   public static final String DEFAULT_TEMPORARY_HDFS_DIRECTORY = "/user/"
       + System.getProperty("user.name") + "/hbase-staging";
 
@@ -1353,6 +1370,8 @@ public final class HConstants {
   public static final String DEFAULT_SNAPSHOT_RESTORE_FAILSAFE_NAME =
       "hbase-failsafe-{snapshot.name}-{restore.timestamp}";
 
+  public static final String DEFAULT_LOSSY_COUNTING_ERROR_RATE =
+      "hbase.util.default.lossycounting.errorrate";
   public static final String NOT_IMPLEMENTED = "Not implemented";
 
   private HConstants() {

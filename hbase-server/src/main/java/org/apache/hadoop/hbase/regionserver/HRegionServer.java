@@ -134,6 +134,8 @@ import org.apache.hadoop.hbase.regionserver.throttle.ThroughputController;
 import org.apache.hadoop.hbase.replication.ReplicationUtils;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationLoad;
 import org.apache.hadoop.hbase.replication.regionserver.ReplicationObserver;
+import org.apache.hadoop.hbase.replication.regionserver.ReplicationSourceInterface;
+import org.apache.hadoop.hbase.replication.regionserver.ReplicationStatus;
 import org.apache.hadoop.hbase.security.Superusers;
 import org.apache.hadoop.hbase.security.User;
 import org.apache.hadoop.hbase.security.UserProvider;
@@ -1046,10 +1048,6 @@ public class HRegionServer extends HasThread implements
     if (this.hMemManager != null) this.hMemManager.stop();
     if (this.cacheFlusher != null) this.cacheFlusher.interruptIfNecessary();
     if (this.compactSplitThread != null) this.compactSplitThread.interruptIfNecessary();
-    if (this.compactionChecker != null) this.compactionChecker.cancel(true);
-    if (this.healthCheckChore != null) this.healthCheckChore.cancel(true);
-    if (this.nonceManagerChore != null) this.nonceManagerChore.cancel(true);
-    if (this.storefileRefresher != null) this.storefileRefresher.cancel(true);
     sendShutdownInterrupt();
 
     // Stop the snapshot and other procedure handlers, forcefully killing all running tasks
@@ -1272,7 +1270,7 @@ public class HRegionServer extends HasThread implements
   /**
    * Builds a {@link RegionSpaceUseReportRequest} protobuf message from the region size map.
    *
-   * @param regionSizeStore The size in bytes of regions
+   * @param regionSizes The size in bytes of regions
    * @return The corresponding protocol buffer message.
    */
   RegionSpaceUseReportRequest buildRegionSpaceUseReportRequest(RegionSizeStore regionSizes) {
@@ -1802,26 +1800,30 @@ public class HRegionServer extends HasThread implements
    * be hooked up to WAL.
    */
   private void setupWALAndReplication() throws IOException {
-    WALFactory factory = new WALFactory(conf, serverName.toString());
+    boolean isMasterNoTableOrSystemTableOnly = this instanceof HMaster &&
+      (!LoadBalancer.isTablesOnMaster(conf) || LoadBalancer.isSystemTablesOnlyOnMaster(conf));
+    WALFactory factory =
+        new WALFactory(conf, serverName.toString(), !isMasterNoTableOrSystemTableOnly);
+    if (!isMasterNoTableOrSystemTableOnly) {
+      // TODO Replication make assumptions here based on the default filesystem impl
+      Path oldLogDir = new Path(walRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
+      String logName = AbstractFSWALProvider.getWALDirectoryName(this.serverName.toString());
 
-    // TODO Replication make assumptions here based on the default filesystem impl
-    Path oldLogDir = new Path(walRootDir, HConstants.HREGION_OLDLOGDIR_NAME);
-    String logName = AbstractFSWALProvider.getWALDirectoryName(this.serverName.toString());
-
-    Path logDir = new Path(walRootDir, logName);
-    LOG.debug("logDir={}", logDir);
-    if (this.walFs.exists(logDir)) {
-      throw new RegionServerRunningException(
-          "Region server has already created directory at " + this.serverName.toString());
+      Path logDir = new Path(walRootDir, logName);
+      LOG.debug("logDir={}", logDir);
+      if (this.walFs.exists(logDir)) {
+        throw new RegionServerRunningException(
+            "Region server has already created directory at " + this.serverName.toString());
+      }
+      // Always create wal directory as now we need this when master restarts to find out the live
+      // region servers.
+      if (!this.walFs.mkdirs(logDir)) {
+        throw new IOException("Can not create wal directory " + logDir);
+      }
+      // Instantiate replication if replication enabled. Pass it the log directories.
+      createNewReplicationInstance(conf, this, this.walFs, logDir, oldLogDir,
+        factory.getWALProvider());
     }
-    // Always create wal directory as now we need this when master restarts to find out the live
-    // region servers.
-    if (!this.walFs.mkdirs(logDir)) {
-      throw new IOException("Can not create wal directory " + logDir);
-    }
-    // Instantiate replication if replication enabled. Pass it the log directories.
-    createNewReplicationInstance(conf, this, this.walFs, logDir, oldLogDir,
-      factory.getWALProvider());
     this.walFactory = factory;
   }
 
@@ -1925,6 +1927,8 @@ public class HRegionServer extends HasThread implements
     }
     this.executorService.startExecutorService(ExecutorType.RS_REFRESH_PEER,
       conf.getInt("hbase.regionserver.executor.refresh.peer.threads", 2));
+    this.executorService.startExecutorService(ExecutorType.RS_REPLAY_SYNC_REPLICATION_WAL,
+      conf.getInt("hbase.regionserver.executor.replay.sync.replication.wal.threads", 1));
 
     Threads.setDaemonThreadRunning(this.walRoller.getThread(), getName() + ".logRoller",
     uncaughtExceptionHandler);
@@ -1957,8 +1961,7 @@ public class HRegionServer extends HasThread implements
     sinkConf.setInt(HConstants.HBASE_CLIENT_SERVERSIDE_RETRIES_MULTIPLIER, 1);
     if (this.csm != null) {
       // SplitLogWorker needs csm. If none, don't start this.
-      this.splitLogWorker = new SplitLogWorker(this, sinkConf, this,
-          this, walFactory);
+      this.splitLogWorker = new SplitLogWorker(sinkConf, this, this, walFactory);
       splitLogWorker.start();
     } else {
       LOG.warn("SplitLogWorker Service NOT started; CoordinatedStateManager is null");
@@ -2429,14 +2432,17 @@ public class HRegionServer extends HasThread implements
    */
   protected void stopServiceThreads() {
     // clean up the scheduled chores
-    if (this.choreService != null) choreService.shutdown();
-    if (this.nonceManagerChore != null) nonceManagerChore.cancel(true);
-    if (this.compactionChecker != null) compactionChecker.cancel(true);
-    if (this.periodicFlusher != null) periodicFlusher.cancel(true);
-    if (this.healthCheckChore != null) healthCheckChore.cancel(true);
-    if (this.storefileRefresher != null) storefileRefresher.cancel(true);
-    if (this.movedRegionsCleaner != null) movedRegionsCleaner.cancel(true);
-    if (this.fsUtilizationChore != null) fsUtilizationChore.cancel(true);
+    if (this.choreService != null) {
+      choreService.cancelChore(nonceManagerChore);
+      choreService.cancelChore(compactionChecker);
+      choreService.cancelChore(periodicFlusher);
+      choreService.cancelChore(healthCheckChore);
+      choreService.cancelChore(storefileRefresher);
+      choreService.cancelChore(movedRegionsCleaner);
+      choreService.cancelChore(fsUtilizationChore);
+      // clean up the remaining scheduled chores (in case we missed out any)
+      choreService.shutdown();
+    }
 
     if (this.cacheFlusher != null) {
       this.cacheFlusher.join();
@@ -2469,16 +2475,15 @@ public class HRegionServer extends HasThread implements
    * @return Return the object that implements the replication
    * source executorService.
    */
-  @VisibleForTesting
+  @Override
   public ReplicationSourceService getReplicationSourceService() {
     return replicationSourceHandler;
   }
 
   /**
-   * @return Return the object that implements the replication
-   * sink executorService.
+   * @return Return the object that implements the replication sink executorService.
    */
-  ReplicationSinkService getReplicationSinkService() {
+  public ReplicationSinkService getReplicationSinkService() {
     return replicationSinkHandler;
   }
 
@@ -2871,14 +2876,14 @@ public class HRegionServer extends HasThread implements
   /**
    * @return Return the walRootDir.
    */
-  protected Path getWALRootDir() {
+  public Path getWALRootDir() {
     return walRootDir;
   }
 
   /**
    * @return Return the walFs.
    */
-  protected FileSystem getWALFileSystem() {
+  public FileSystem getWALFileSystem() {
     return walFs;
   }
 
@@ -2943,11 +2948,6 @@ public class HRegionServer extends HasThread implements
    */
   private static void createNewReplicationInstance(Configuration conf, HRegionServer server,
       FileSystem walFs, Path walDir, Path oldWALDir, WALProvider walProvider) throws IOException {
-    if ((server instanceof HMaster) &&
-      (!LoadBalancer.isTablesOnMaster(conf) || LoadBalancer.isSystemTablesOnlyOnMaster(conf))) {
-      return;
-    }
-
     // read in the name of the source replication class from the config file.
     String sourceClassname = conf.get(HConstants.REPLICATION_SOURCE_SERVICE_CLASSNAME,
       HConstants.REPLICATION_SERVICE_CLASSNAME_DEFAULT);
@@ -2983,6 +2983,20 @@ public class HRegionServer extends HasThread implements
     T service = ReflectionUtils.newInstance(clazz, conf);
     service.initialize(server, walFs, logDir, oldLogDir, walProvider);
     return service;
+  }
+
+  public Map<String, ReplicationStatus> getWalGroupsReplicationStatus(){
+    Map<String, ReplicationStatus> walGroupsReplicationStatus = new TreeMap<>();
+    if(!this.isOnline()){
+      return walGroupsReplicationStatus;
+    }
+    List<ReplicationSourceInterface> allSources = new ArrayList<>();
+    allSources.addAll(replicationSourceHandler.getReplicationManager().getSources());
+    allSources.addAll(replicationSourceHandler.getReplicationManager().getOldSources());
+    for(ReplicationSourceInterface source: allSources){
+      walGroupsReplicationStatus.putAll(source.getWalGroupStatus());
+    }
+    return walGroupsReplicationStatus;
   }
 
   /**

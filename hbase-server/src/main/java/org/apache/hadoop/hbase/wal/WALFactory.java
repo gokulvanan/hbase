@@ -82,7 +82,6 @@ public class WALFactory {
   static final String DEFAULT_WAL_PROVIDER = Providers.defaultProvider.name();
 
   public static final String META_WAL_PROVIDER = "hbase.wal.meta_provider";
-  static final String DEFAULT_META_WAL_PROVIDER = Providers.defaultProvider.name();
 
   final String factoryId;
   private final WALProvider provider;
@@ -123,7 +122,19 @@ public class WALFactory {
   @VisibleForTesting
   public Class<? extends WALProvider> getProviderClass(String key, String defaultValue) {
     try {
-      return Providers.valueOf(conf.get(key, defaultValue)).clazz;
+      Providers provider = Providers.valueOf(conf.get(key, defaultValue));
+      if (provider != Providers.defaultProvider) {
+        // User gives a wal provider explicitly, just use that one
+        return provider.clazz;
+      }
+      // AsyncFSWAL has better performance in most cases, and also uses less resources, we will try
+      // to use it if possible. But it deeply hacks into the internal of DFSClient so will be easily
+      // broken when upgrading hadoop. If it is broken, then we fall back to use FSHLog.
+      if (AsyncFSWALProvider.load()) {
+        return AsyncFSWALProvider.class;
+      } else {
+        return FSHLogProvider.class;
+      }
     } catch (IllegalArgumentException exception) {
       // Fall back to them specifying a class name
       // Note that the passed default class shouldn't actually be used, since the above only fails
@@ -132,29 +143,15 @@ public class WALFactory {
     }
   }
 
-  WALProvider createProvider(Class<? extends WALProvider> clazz, String providerId)
-      throws IOException {
-    LOG.info("Instantiating WALProvider of type " + clazz);
+  static WALProvider createProvider(Class<? extends WALProvider> clazz) throws IOException {
+    LOG.info("Instantiating WALProvider of type {}", clazz);
     try {
-      final WALProvider result = clazz.getDeclaredConstructor().newInstance();
-      result.init(this, conf, providerId);
-      return result;
+      return clazz.getDeclaredConstructor().newInstance();
     } catch (Exception e) {
       LOG.error("couldn't set up WALProvider, the configured class is " + clazz);
       LOG.debug("Exception details for failure to load WALProvider.", e);
       throw new IOException("couldn't set up WALProvider", e);
     }
-  }
-
-  /**
-   * instantiate a provider from a config property. requires conf to have already been set (as well
-   * as anything the provider might need to read).
-   */
-  WALProvider getProvider(String key, String defaultValue, String providerId) throws IOException {
-    Class<? extends WALProvider> clazz = getProviderClass(key, defaultValue);
-    WALProvider provider = createProvider(clazz, providerId);
-    provider.addWALActionsListener(new MetricsWAL());
-    return provider;
   }
 
   /**
@@ -164,6 +161,21 @@ public class WALFactory {
    *          to make a directory
    */
   public WALFactory(Configuration conf, String factoryId) throws IOException {
+    // default enableSyncReplicationWALProvider is true, only disable SyncReplicationWALProvider
+    // for HMaster or HRegionServer which take system table only. See HBASE-19999
+    this(conf, factoryId, true);
+  }
+
+  /**
+   * @param conf must not be null, will keep a reference to read params in later reader/writer
+   *          instances.
+   * @param factoryId a unique identifier for this factory. used i.e. by filesystem implementations
+   *          to make a directory
+   * @param enableSyncReplicationWALProvider whether wrap the wal provider to a
+   *          {@link SyncReplicationWALProvider}
+   */
+  public WALFactory(Configuration conf, String factoryId, boolean enableSyncReplicationWALProvider)
+      throws IOException {
     // until we've moved reader/writer construction down into providers, this initialization must
     // happen prior to provider initialization, in case they need to instantiate a reader/writer.
     timeoutMillis = conf.getInt("hbase.hlog.open.timeout", 300000);
@@ -174,7 +186,13 @@ public class WALFactory {
     this.factoryId = factoryId;
     // end required early initialization
     if (conf.getBoolean("hbase.regionserver.hlog.enabled", true)) {
-      provider = getProvider(WAL_PROVIDER, DEFAULT_WAL_PROVIDER, null);
+      WALProvider provider = createProvider(getProviderClass(WAL_PROVIDER, DEFAULT_WAL_PROVIDER));
+      if (enableSyncReplicationWALProvider) {
+        provider = new SyncReplicationWALProvider(provider);
+      }
+      provider.init(this, conf, null);
+      provider.addWALActionsListener(new MetricsWAL());
+      this.provider = provider;
     } else {
       // special handling of existing configuration behavior.
       LOG.warn("Running with WAL disabled.");
@@ -225,14 +243,17 @@ public class WALFactory {
     return provider.getWALs();
   }
 
-  private WALProvider getMetaProvider() throws IOException {
+  @VisibleForTesting
+  WALProvider getMetaProvider() throws IOException {
     for (;;) {
       WALProvider provider = this.metaProvider.get();
       if (provider != null) {
         return provider;
       }
-      provider = getProvider(META_WAL_PROVIDER, DEFAULT_META_WAL_PROVIDER,
-        AbstractFSWALProvider.META_WAL_PROVIDER_ID);
+      provider = createProvider(getProviderClass(META_WAL_PROVIDER,
+          conf.get(WAL_PROVIDER, DEFAULT_WAL_PROVIDER)));
+      provider.init(this, conf, AbstractFSWALProvider.META_WAL_PROVIDER_ID);
+      provider.addWALActionsListener(new MetricsWAL());
       if (metaProvider.compareAndSet(null, provider)) {
         return provider;
       } else {

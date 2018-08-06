@@ -106,6 +106,9 @@ public class RegionStates {
 
     private volatile RegionTransitionProcedure procedure = null;
     private volatile ServerName regionLocation = null;
+    // notice that, the lastHost will only be updated when a region is successfully CLOSED through
+    // UnassignProcedure, so do not use it for critical condition as the data maybe stale and unsync
+    // with the data in meta.
     private volatile ServerName lastHost = null;
     /**
      * A Region-in-Transition (RIT) moves through states.
@@ -500,11 +503,21 @@ public class RegionStates {
 
   public void deleteRegion(final RegionInfo regionInfo) {
     regionsMap.remove(regionInfo.getRegionName());
+    // See HBASE-20860
+    // After master restarts, merged regions' RIT state may not be cleaned,
+    // making sure they are cleaned here
+    if (regionInTransition.containsKey(regionInfo)) {
+      regionInTransition.remove(regionInfo);
+    }
     // Remove from the offline regions map too if there.
     if (this.regionOffline.containsKey(regionInfo)) {
       if (LOG.isTraceEnabled()) LOG.trace("Removing from regionOffline Map: " + regionInfo);
       this.regionOffline.remove(regionInfo);
     }
+  }
+
+  public void deleteRegions(final List<RegionInfo> regionInfos) {
+    regionInfos.forEach(this::deleteRegion);
   }
 
   ArrayList<RegionStateNode> getTableRegionStateNodes(final TableName tableName) {
@@ -630,6 +643,12 @@ public class RegionStates {
    */
   public HRegionLocation checkReopened(HRegionLocation oldLoc) {
     RegionStateNode node = getRegionStateNode(oldLoc.getRegion());
+    // HBASE-20921
+    // if the oldLoc's state node does not exist, that means the region is
+    // merged or split, no need to check it
+    if (node == null) {
+      return null;
+    }
     synchronized (node) {
       if (oldLoc.getSeqNum() >= 0) {
         // in OPEN state before
@@ -760,7 +779,6 @@ public class RegionStates {
     setServerState(serverName, ServerState.OFFLINE);
   }
 
-  @VisibleForTesting
   public void updateRegionState(final RegionInfo regionInfo, final State state) {
     final RegionStateNode regionNode = getOrCreateRegionStateNode(regionInfo);
     synchronized (regionNode) {

@@ -18,7 +18,6 @@
 package org.apache.hadoop.hbase.replication;
 
 import java.util.List;
-
 import org.apache.yetus.audience.InterfaceAudience;
 
 /**
@@ -31,8 +30,8 @@ public interface ReplicationPeerStorage {
    * Add a replication peer.
    * @throws ReplicationException if there are errors accessing the storage service.
    */
-  void addPeer(String peerId, ReplicationPeerConfig peerConfig, boolean enabled)
-      throws ReplicationException;
+  void addPeer(String peerId, ReplicationPeerConfig peerConfig, boolean enabled,
+      SyncReplicationState syncReplicationState) throws ReplicationException;
 
   /**
    * Remove a replication peer.
@@ -70,4 +69,32 @@ public interface ReplicationPeerStorage {
    * @throws ReplicationException if there are errors accessing the storage service.
    */
   ReplicationPeerConfig getPeerConfig(String peerId) throws ReplicationException;
+
+  /**
+   * Set the new sync replication state that we are going to transit to.
+   * @throws ReplicationException if there are errors accessing the storage service.
+   */
+  void setPeerNewSyncReplicationState(String peerId, SyncReplicationState state)
+      throws ReplicationException;
+
+  /**
+   * Overwrite the sync replication state with the new sync replication state which is set with the
+   * {@link #setPeerNewSyncReplicationState(String, SyncReplicationState)} method above, and clear
+   * the new sync replication state.
+   * @throws ReplicationException if there are errors accessing the storage service.
+   */
+  void transitPeerSyncReplicationState(String peerId) throws ReplicationException;
+
+  /**
+   * Get the sync replication state.
+   * @throws ReplicationException if there are errors accessing the storage service.
+   */
+  SyncReplicationState getPeerSyncReplicationState(String peerId) throws ReplicationException;
+
+  /**
+   * Get the new sync replication state. Will return {@link SyncReplicationState#NONE} if we are
+   * not in a transition.
+   * @throws ReplicationException if there are errors accessing the storage service.
+   */
+  SyncReplicationState getPeerNewSyncReplicationState(String peerId) throws ReplicationException;
 }

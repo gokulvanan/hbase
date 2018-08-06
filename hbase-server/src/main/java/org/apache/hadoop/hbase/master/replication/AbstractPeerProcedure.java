@@ -36,8 +36,6 @@ public abstract class AbstractPeerProcedure<TState>
 
   protected String peerId;
 
-  private volatile boolean locked;
-
   // used to keep compatible with old client where we can only returns after updateStorage.
   protected ProcedurePrepareLatch latch;
 
@@ -46,7 +44,7 @@ public abstract class AbstractPeerProcedure<TState>
 
   protected AbstractPeerProcedure(String peerId) {
     this.peerId = peerId;
-    this.latch = ProcedurePrepareLatch.createLatch(2, 0);
+    this.latch = ProcedurePrepareLatch.createLatch(2, 1);
   }
 
   public ProcedurePrepareLatch getLatch() {
@@ -59,28 +57,26 @@ public abstract class AbstractPeerProcedure<TState>
   }
 
   @Override
+  protected boolean waitInitialized(MasterProcedureEnv env) {
+    return env.waitInitialized(this);
+  }
+
+  @Override
   protected LockState acquireLock(MasterProcedureEnv env) {
     if (env.getProcedureScheduler().waitPeerExclusiveLock(this, peerId)) {
       return LockState.LOCK_EVENT_WAIT;
     }
-    locked = true;
     return LockState.LOCK_ACQUIRED;
   }
 
   @Override
   protected void releaseLock(MasterProcedureEnv env) {
-    locked = false;
     env.getProcedureScheduler().wakePeerExclusiveLock(this, peerId);
   }
 
   @Override
   protected boolean holdLock(MasterProcedureEnv env) {
     return true;
-  }
-
-  @Override
-  protected boolean hasLock(MasterProcedureEnv env) {
-    return locked;
   }
 
   @Override
@@ -93,5 +89,21 @@ public abstract class AbstractPeerProcedure<TState>
   protected void deserializeStateData(ProcedureStateSerializer serializer) throws IOException {
     super.deserializeStateData(serializer);
     peerId = serializer.deserialize(PeerProcedureStateData.class).getPeerId();
+  }
+
+  @Override
+  protected void rollbackState(MasterProcedureEnv env, TState state)
+      throws IOException, InterruptedException {
+    if (state == getInitialState()) {
+      // actually the peer related operations has no rollback, but if we haven't done any
+      // modifications on the peer storage yet, we can just return.
+      return;
+    }
+    throw new UnsupportedOperationException();
+  }
+
+  protected final void refreshPeer(MasterProcedureEnv env, PeerOperationType type) {
+    addChildProcedure(env.getMasterServices().getServerManager().getOnlineServersList().stream()
+      .map(sn -> new RefreshPeerProcedure(peerId, type, sn)).toArray(RefreshPeerProcedure[]::new));
   }
 }

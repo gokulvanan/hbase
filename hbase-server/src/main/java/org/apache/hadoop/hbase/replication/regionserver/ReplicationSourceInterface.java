@@ -19,7 +19,9 @@
 package org.apache.hadoop.hbase.replication.regionserver;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
@@ -104,10 +106,17 @@ public interface ReplicationSourceInterface {
 
   /**
    * Get the id that the source is replicating to.
-   *
    * @return peer id
    */
-  String getPeerId();
+  default String getPeerId() {
+    return getPeer().getId();
+  }
+
+  /**
+   * Get the replication peer instance.
+   * @return the replication peer instance
+   */
+  ReplicationPeer getPeer();
 
   /**
    * Get a string representation of the current statistics
@@ -119,8 +128,16 @@ public interface ReplicationSourceInterface {
   /**
    * @return peer enabled or not
    */
-  boolean isPeerEnabled();
+  default boolean isPeerEnabled() {
+    return getPeer().isPeerEnabled();
+  }
 
+  /**
+   * @return whether this is sync replication peer.
+   */
+  default boolean isSyncReplication() {
+    return getPeer().getPeerConfig().isSyncReplication();
+  }
   /**
    * @return active or not
    */
@@ -166,6 +183,14 @@ public interface ReplicationSourceInterface {
    * @return the server name which all WALs belong to
    */
   ServerName getServerWALsBelongTo();
+
+  /**
+   * get the stat of replication for each wal group.
+   * @return stat of replication
+   */
+  default Map<String, ReplicationStatus> getWalGroupStatus() {
+    return new HashMap<>();
+  }
 
   /**
    * @return whether this is a replication source for recovery.

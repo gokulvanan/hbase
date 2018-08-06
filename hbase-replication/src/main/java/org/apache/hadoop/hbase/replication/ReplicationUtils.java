@@ -23,18 +23,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.CompoundConfiguration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Helper class for replication.
  */
 @InterfaceAudience.Private
 public final class ReplicationUtils {
+
+  private static final Logger LOG = LoggerFactory.getLogger(ReplicationUtils.class);
+
+  public static final String REPLICATION_ATTR_NAME = "__rep__";
+
+  public static final String REMOTE_WAL_DIR_NAME = "remoteWALs";
+
+  public static final String SYNC_WAL_SUFFIX = ".syncrep";
+
+  public static final String REMOTE_WAL_REPLAY_SUFFIX = "-replay";
+
+  public static final String REMOTE_WAL_SNAPSHOT_SUFFIX = "-snapshot";
+
+  // This is used for copying sync replication log from local to remote and overwrite the old one
+  // since some FileSystem implementation may not support atomic rename.
+  public static final String RENAME_WAL_SUFFIX = ".ren";
 
   private ReplicationUtils() {
   }
@@ -170,5 +190,50 @@ public final class ReplicationUtils {
       }
       return tableCFs != null && tableCFs.containsKey(tableName);
     }
+  }
+
+  public static FileSystem getRemoteWALFileSystem(Configuration conf, String remoteWALDir)
+      throws IOException {
+    return new Path(remoteWALDir).getFileSystem(conf);
+  }
+
+  public static Path getPeerRemoteWALDir(String remoteWALDir, String peerId) {
+    return new Path(remoteWALDir, peerId);
+  }
+
+  public static Path getPeerRemoteWALDir(Path remoteWALDir, String peerId) {
+    return new Path(remoteWALDir, peerId);
+  }
+
+  public static Path getPeerReplayWALDir(Path remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_REPLAY_SUFFIX);
+  }
+
+  public static Path getPeerSnapshotWALDir(String remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_SNAPSHOT_SUFFIX);
+  }
+
+  public static Path getPeerSnapshotWALDir(Path remoteWALDir, String peerId) {
+    return getPeerRemoteWALDir(remoteWALDir, peerId).suffix(REMOTE_WAL_SNAPSHOT_SUFFIX);
+  }
+
+  /**
+   * Do the sleeping logic
+   * @param msg Why we sleep
+   * @param sleepForRetries the base sleep time.
+   * @param sleepMultiplier by how many times the default sleeping time is augmented
+   * @param maxRetriesMultiplier the max retry multiplier
+   * @return True if <code>sleepMultiplier</code> is &lt; <code>maxRetriesMultiplier</code>
+   */
+  public static boolean sleepForRetries(String msg, long sleepForRetries, int sleepMultiplier,
+      int maxRetriesMultiplier) {
+    try {
+      LOG.trace("{}, sleeping {} times {}", msg, sleepForRetries, sleepMultiplier);
+      Thread.sleep(sleepForRetries * sleepMultiplier);
+    } catch (InterruptedException e) {
+      LOG.debug("Interrupted while sleeping between retries");
+      Thread.currentThread().interrupt();
+    }
+    return sleepMultiplier < maxRetriesMultiplier;
   }
 }

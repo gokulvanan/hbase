@@ -144,6 +144,7 @@ import org.apache.hadoop.hbase.regionserver.ScannerContext.LimitScope;
 import org.apache.hadoop.hbase.regionserver.ScannerContext.NextState;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionContext;
 import org.apache.hadoop.hbase.regionserver.compactions.CompactionLifeCycleTracker;
+import org.apache.hadoop.hbase.regionserver.compactions.ForbidMajorCompactionChecker;
 import org.apache.hadoop.hbase.regionserver.throttle.CompactionThroughputControllerFactory;
 import org.apache.hadoop.hbase.regionserver.throttle.NoLimitThroughputController;
 import org.apache.hadoop.hbase.regionserver.throttle.StoreHotnessProtector;
@@ -973,8 +974,11 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     long maxSeqIdFromFile =
       WALSplitter.getMaxRegionSequenceId(fs.getFileSystem(), fs.getRegionDir());
     long nextSeqId = Math.max(maxSeqId, maxSeqIdFromFile) + 1;
-    if (writestate.writesEnabled) {
-      LOG.debug("writing seq id for " + this.getRegionInfo().getEncodedName());
+    // The openSeqNum will always be increase even for read only region, as we rely on it to
+    // determine whether a region has been successfully reopend, so here we always need to update
+    // the max sequence id file.
+    if (RegionReplicaUtil.isDefaultReplica(getRegionInfo())) {
+      LOG.debug("writing seq id for {}", this.getRegionInfo().getEncodedName());
       WALSplitter.writeRegionSequenceIdFile(fs.getFileSystem(), fs.getRegionDir(), nextSeqId - 1);
     }
 
@@ -1532,7 +1536,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     // the close flag?
     if (!abort && worthPreFlushing() && canFlush) {
       status.setStatus("Pre-flushing region before close");
-      LOG.info("Running close preflush of {}" + this.getRegionInfo().getEncodedName());
+      LOG.info("Running close preflush of {}", this.getRegionInfo().getEncodedName());
       try {
         internalFlushcache(status);
       } catch (IOException ioe) {
@@ -1656,7 +1660,10 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       }
 
       status.setStatus("Writing region close event to WAL");
-      if (!abort && wal != null && getRegionServerServices() != null && !writestate.readOnly) {
+      // Always write close marker to wal even for read only table. This is not a big problem as we
+      // do not write any data into the region.
+      if (!abort && wal != null && getRegionServerServices() != null &&
+        RegionReplicaUtil.isDefaultReplica(getRegionInfo())) {
         writeRegionCloseMarker(wal);
       }
 
@@ -1992,6 +1999,88 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     return compact(compaction, store, throughputController, null);
   }
 
+  private boolean shouldForbidMajorCompaction() {
+    if (rsServices != null && rsServices.getReplicationSourceService() != null) {
+      return rsServices.getReplicationSourceService().getSyncReplicationPeerInfoProvider()
+          .checkState(getRegionInfo().getTable(), ForbidMajorCompactionChecker.get());
+    }
+    return false;
+  }
+
+  /**
+   * We are trying to remove / relax the region read lock for compaction.
+   * Let's see what are the potential race conditions among the operations (user scan,
+   * region split, region close and region bulk load).
+   *
+   *  user scan ---> region read lock
+   *  region split --> region close first --> region write lock
+   *  region close --> region write lock
+   *  region bulk load --> region write lock
+   *
+   * read lock is compatible with read lock. ---> no problem with user scan/read
+   * region bulk load does not cause problem for compaction (no consistency problem, store lock
+   * will help the store file accounting).
+   * They can run almost concurrently at the region level.
+   *
+   * The only remaining race condition is between the region close and compaction.
+   * So we will evaluate, below, how region close intervenes with compaction if compaction does
+   * not acquire region read lock.
+   *
+   * Here are the steps for compaction:
+   * 1. obtain list of StoreFile's
+   * 2. create StoreFileScanner's based on list from #1
+   * 3. perform compaction and save resulting files under tmp dir
+   * 4. swap in compacted files
+   *
+   * #1 is guarded by store lock. This patch does not change this --> no worse or better
+   * For #2, we obtain smallest read point (for region) across all the Scanners (for both default
+   * compactor and stripe compactor).
+   * The read points are for user scans. Region keeps the read points for all currently open
+   * user scanners.
+   * Compaction needs to know the smallest read point so that during re-write of the hfiles,
+   * it can remove the mvcc points for the cells if their mvccs are older than the smallest
+   * since they are not needed anymore.
+   * This will not conflict with compaction.
+   * For #3, it can be performed in parallel to other operations.
+   * For #4 bulk load and compaction don't conflict with each other on the region level
+   *   (for multi-family atomicy).
+   * Region close and compaction are guarded pretty well by the 'writestate'.
+   * In HRegion#doClose(), we have :
+   * synchronized (writestate) {
+   *   // Disable compacting and flushing by background threads for this
+   *   // region.
+   *   canFlush = !writestate.readOnly;
+   *   writestate.writesEnabled = false;
+   *   LOG.debug("Closing " + this + ": disabling compactions & flushes");
+   *   waitForFlushesAndCompactions();
+   * }
+   * waitForFlushesAndCompactions() would wait for writestate.compacting to come down to 0.
+   * and in HRegion.compact()
+   *  try {
+   *    synchronized (writestate) {
+   *    if (writestate.writesEnabled) {
+   *      wasStateSet = true;
+   *      ++writestate.compacting;
+   *    } else {
+   *      String msg = "NOT compacting region " + this + ". Writes disabled.";
+   *      LOG.info(msg);
+   *      status.abort(msg);
+   *      return false;
+   *    }
+   *  }
+   * Also in compactor.performCompaction():
+   * check periodically to see if a system stop is requested
+   * if (closeCheckInterval > 0) {
+   *   bytesWritten += len;
+   *   if (bytesWritten > closeCheckInterval) {
+   *     bytesWritten = 0;
+   *     if (!store.areWritesEnabled()) {
+   *       progress.cancel();
+   *       return false;
+   *     }
+   *   }
+   * }
+   */
   public boolean compact(CompactionContext compaction, HStore store,
       ThroughputController throughputController, User user) throws IOException {
     assert compaction != null && compaction.hasSelection();
@@ -2001,82 +2090,17 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       store.cancelRequestedCompaction(compaction);
       return false;
     }
+
+    if (compaction.getRequest().isAllFiles() && shouldForbidMajorCompaction()) {
+      LOG.warn("Skipping major compaction on " + this
+          + " because this cluster is transiting sync replication state"
+          + " from STANDBY to DOWNGRADE_ACTIVE");
+      store.cancelRequestedCompaction(compaction);
+      return false;
+    }
+
     MonitoredTask status = null;
     boolean requestNeedsCancellation = true;
-    /*
-     * We are trying to remove / relax the region read lock for compaction.
-     * Let's see what are the potential race conditions among the operations (user scan,
-     * region split, region close and region bulk load).
-     *
-     *  user scan ---> region read lock
-     *  region split --> region close first --> region write lock
-     *  region close --> region write lock
-     *  region bulk load --> region write lock
-     *
-     * read lock is compatible with read lock. ---> no problem with user scan/read
-     * region bulk load does not cause problem for compaction (no consistency problem, store lock
-     *  will help the store file accounting).
-     * They can run almost concurrently at the region level.
-     *
-     * The only remaining race condition is between the region close and compaction.
-     * So we will evaluate, below, how region close intervenes with compaction if compaction does
-     * not acquire region read lock.
-     *
-     * Here are the steps for compaction:
-     * 1. obtain list of StoreFile's
-     * 2. create StoreFileScanner's based on list from #1
-     * 3. perform compaction and save resulting files under tmp dir
-     * 4. swap in compacted files
-     *
-     * #1 is guarded by store lock. This patch does not change this --> no worse or better
-     * For #2, we obtain smallest read point (for region) across all the Scanners (for both default
-     * compactor and stripe compactor).
-     * The read points are for user scans. Region keeps the read points for all currently open
-     * user scanners.
-     * Compaction needs to know the smallest read point so that during re-write of the hfiles,
-     * it can remove the mvcc points for the cells if their mvccs are older than the smallest
-     * since they are not needed anymore.
-     * This will not conflict with compaction.
-     * For #3, it can be performed in parallel to other operations.
-     * For #4 bulk load and compaction don't conflict with each other on the region level
-     *   (for multi-family atomicy).
-     * Region close and compaction are guarded pretty well by the 'writestate'.
-     * In HRegion#doClose(), we have :
-     * synchronized (writestate) {
-     *   // Disable compacting and flushing by background threads for this
-     *   // region.
-     *   canFlush = !writestate.readOnly;
-     *   writestate.writesEnabled = false;
-     *   LOG.debug("Closing " + this + ": disabling compactions & flushes");
-     *   waitForFlushesAndCompactions();
-     * }
-     * waitForFlushesAndCompactions() would wait for writestate.compacting to come down to 0.
-     * and in HRegion.compact()
-     *  try {
-     *    synchronized (writestate) {
-     *    if (writestate.writesEnabled) {
-     *      wasStateSet = true;
-     *      ++writestate.compacting;
-     *    } else {
-     *      String msg = "NOT compacting region " + this + ". Writes disabled.";
-     *      LOG.info(msg);
-     *      status.abort(msg);
-     *      return false;
-     *    }
-     *  }
-     * Also in compactor.performCompaction():
-     * check periodically to see if a system stop is requested
-     * if (closeCheckInterval > 0) {
-     *   bytesWritten += len;
-     *   if (bytesWritten > closeCheckInterval) {
-     *     bytesWritten = 0;
-     *     if (!store.areWritesEnabled()) {
-     *       progress.cancel();
-     *       return false;
-     *     }
-     *   }
-     * }
-     */
     try {
       byte[] cf = Bytes.toBytes(store.getColumnFamilyName());
       if (stores.get(cf) != store) {
@@ -2087,6 +2111,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       }
 
       status = TaskMonitor.get().createStatus("Compacting " + store + " in " + this);
+      status.enableStatusJournal(false);
       if (this.closed.get()) {
         String msg = "Skipping compaction on " + this + " because closed";
         LOG.debug(msg);
@@ -2135,7 +2160,10 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       return true;
     } finally {
       if (requestNeedsCancellation) store.cancelRequestedCompaction(compaction);
-      if (status != null) status.cleanup();
+      if (status != null) {
+        LOG.debug("Compaction status journal:\n\t" + status.prettyPrintJournal());
+        status.cleanup();
+      }
     }
   }
 
@@ -2216,6 +2244,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       return new FlushResultImpl(FlushResult.Result.CANNOT_FLUSH, msg, false);
     }
     MonitoredTask status = TaskMonitor.get().createStatus("Flushing " + this);
+    status.enableStatusJournal(false);
     status.setStatus("Acquiring readlock on region");
     // block waiting for the lock for flushing cache
     lock.readLock().lock();
@@ -2279,6 +2308,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       }
     } finally {
       lock.readLock().unlock();
+      LOG.debug("Flush status journal:\n\t" + status.prettyPrintJournal());
       status.cleanup();
     }
   }
@@ -3048,13 +3078,22 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     }
 
     public abstract Mutation getMutation(int index);
+
     public abstract long getNonceGroup(int index);
+
     public abstract long getNonce(int index);
-    /** This method is potentially expensive and useful mostly for non-replay CP path. */
+
+    /**
+     * This method is potentially expensive and useful mostly for non-replay CP path.
+     */
     public abstract Mutation[] getMutationsForCoprocs();
+
     public abstract boolean isInReplay();
+
     public abstract long getOrigLogSeqNum();
+
     public abstract void startRegionOperation() throws IOException;
+
     public abstract void closeRegionOperation() throws IOException;
 
     /**
@@ -3073,8 +3112,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     protected abstract void checkAndPreparePut(final Put p) throws IOException;
 
     /**
-     *  If necessary, calls preBatchMutate() CP hook for a mini-batch and updates metrics, cell
-     *  count, tags and timestamp for all cells of all operations in a mini-batch.
+     * If necessary, calls preBatchMutate() CP hook for a mini-batch and updates metrics, cell
+     * count, tags and timestamp for all cells of all operations in a mini-batch.
      */
     public abstract void prepareMiniBatchOperations(MiniBatchOperationInProgress<Mutation>
         miniBatchOp, long timestamp, final List<RowLock> acquiredRowLocks) throws IOException;
@@ -3250,7 +3289,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         try {
           // if atomic then get exclusive lock, else shared lock
           rowLock = region.getRowLockInternal(mutation.getRow(), !isAtomic(), prevRowLock);
-        } catch (TimeoutIOException|InterruptedIOException e) {
+        } catch (TimeoutIOException | InterruptedIOException e) {
           // NOTE: We will retry when other exceptions, but we should stop if we receive
           // TimeoutIOException or InterruptedIOException as operation has timed out or
           // interrupted respectively.
@@ -3307,6 +3346,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
 
       visitBatchOperations(true, nextIndexToProcess + miniBatchOp.size(), new Visitor() {
         private Pair<NonceKey, WALEdit> curWALEditForNonce;
+
         @Override
         public boolean visit(int index) throws IOException {
           Mutation m = getMutation(index);
@@ -3330,14 +3370,14 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
           }
           WALEdit walEdit = curWALEditForNonce.getSecond();
 
-          // Add WAL edits by CP
+          // Add WAL edits from CPs.
           WALEdit fromCP = walEditsFromCoprocessors[index];
           if (fromCP != null) {
             for (Cell cell : fromCP.getCells()) {
               walEdit.add(cell);
             }
           }
-          addFamilyMapToWALEdit(familyCellMaps[index], walEdit);
+          walEdit.add(familyCellMaps[index]);
 
           return true;
         }
@@ -3409,27 +3449,8 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         region.applyToMemStore(region.getStore(family), cells, false, memstoreAccounting);
       }
     }
-
-    /**
-     * Append the given map of family->edits to a WALEdit data structure.
-     * This does not write to the WAL itself.
-     * @param familyMap map of family->edits
-     * @param walEdit the destination entry to append into
-     */
-    private void addFamilyMapToWALEdit(Map<byte[], List<Cell>> familyMap,
-        WALEdit walEdit) {
-      for (List<Cell> edits : familyMap.values()) {
-        // Optimization: 'foreach' loop is not used. See:
-        // HBASE-12023 HRegion.applyFamilyMapToMemstore creates too many iterator objects
-        assert edits instanceof RandomAccess;
-        int listSize = edits.size();
-        for (int i=0; i < listSize; i++) {
-          Cell cell = edits.get(i);
-          walEdit.add(cell);
-        }
-      }
-    }
   }
+
 
   /**
    * Batch of mutation operations. Base class is shared with {@link ReplayBatchOperation} as most
@@ -4337,12 +4358,11 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
 
   /**
    * Add updates first to the wal and then add values to memstore.
+   * <p>
    * Warning: Assumption is caller has lock on passed in row.
    * @param edits Cell updates by column
-   * @throws IOException
    */
-  void put(final byte [] row, byte [] family, List<Cell> edits)
-  throws IOException {
+  void put(final byte[] row, byte[] family, List<Cell> edits) throws IOException {
     NavigableMap<byte[], List<Cell>> familyMap;
     familyMap = new TreeMap<>(Bytes.BYTES_COMPARATOR);
 
@@ -7042,7 +7062,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * HRegion#getMinSequenceId() to ensure the wal id is properly kept
    * up.  HRegionStore does this every time it opens a new region.
    * @return new HRegion
-   * @throws IOException
    */
   public static HRegion openHRegion(final Configuration conf, final FileSystem fs,
       final Path rootDir, final RegionInfo info, final TableDescriptor htd, final WAL wal)
@@ -7064,7 +7083,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * @param rsServices An interface we can request flushes against.
    * @param reporter An interface we can report progress against.
    * @return new HRegion
-   * @throws IOException
    */
   public static HRegion openHRegion(final Configuration conf, final FileSystem fs,
       final Path rootDir, final RegionInfo info, final TableDescriptor htd, final WAL wal,
@@ -7088,7 +7106,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * @param rsServices An interface we can request flushes against.
    * @param reporter An interface we can report progress against.
    * @return new HRegion
-   * @throws IOException
    */
   public static HRegion openHRegion(final Configuration conf, final FileSystem fs,
       final Path rootDir, final Path tableDir, final RegionInfo info, final TableDescriptor htd,
@@ -7113,7 +7130,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * @param other original object
    * @param reporter An interface we can report progress against.
    * @return new HRegion
-   * @throws IOException
    */
   public static HRegion openHRegion(final HRegion other, final CancelableProgressable reporter)
       throws IOException {
@@ -7146,8 +7162,11 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     checkClassLoading();
     this.openSeqNum = initialize(reporter);
     this.mvcc.advanceTo(openSeqNum);
-    if (wal != null && getRegionServerServices() != null && !writestate.readOnly) {
-      // Only write the region open event marker to WAL if we are not read-only.
+    // The openSeqNum must be increased every time when a region is assigned, as we rely on it to
+    // determine whether a region has been successfully reopened. So here we always write open
+    // marker, even if the table is read only.
+    if (wal != null && getRegionServerServices() != null &&
+      RegionReplicaUtil.isDefaultReplica(getRegionInfo())) {
       writeRegionOpenMarker(wal, openSeqNum);
     }
     return this;
@@ -7160,7 +7179,6 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * @param info Info for region to be opened.
    * @param htd the table descriptor
    * @return new HRegion
-   * @throws IOException e
    */
   public static HRegion openReadOnlyFileSystemHRegion(final Configuration conf, final FileSystem fs,
       final Path tableDir, RegionInfo info, final TableDescriptor htd) throws IOException {
@@ -8242,7 +8260,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         break;
     }
     if (op == Operation.MERGE_REGION || op == Operation.SPLIT_REGION
-        || op == Operation.COMPACT_REGION) {
+        || op == Operation.COMPACT_REGION || op == Operation.COMPACT_SWITCH) {
       // split, merge or compact region doesn't need to check the closing/closed state or lock the
       // region
       return;
@@ -8563,7 +8581,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       stores.values().forEach(HStore::triggerMajorCompaction);
     }
     rsServices.getCompactionRequestor().requestCompaction(this, why, priority, tracker,
-      RpcServer.getRequestUser().orElse(null));
+        RpcServer.getRequestUser().orElse(null));
   }
 
   @Override
@@ -8578,7 +8596,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       store.triggerMajorCompaction();
     }
     rsServices.getCompactionRequestor().requestCompaction(this, store, why, priority, tracker,
-      RpcServer.getRequestUser().orElse(null));
+        RpcServer.getRequestUser().orElse(null));
   }
 
   private void requestFlushIfNeeded() throws RegionTooBusyException {

@@ -334,6 +334,7 @@ Shell.load_command_group(
     is_in_maintenance_mode
     close_region
     compact
+    compaction_switch
     flush
     major_compact
     move
@@ -393,6 +394,7 @@ Shell.load_command_group(
     get_peer_config
     list_peer_configs
     update_peer_config
+    transit_peer_sync_replication_state
   ]
 )
 

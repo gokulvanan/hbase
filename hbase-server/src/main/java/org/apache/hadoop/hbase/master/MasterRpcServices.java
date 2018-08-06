@@ -118,6 +118,7 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.NameStringPair;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.ProcedureDescription;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.RegionSpecifier.RegionSpecifierType;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.HBaseProtos.VersionInfo;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.LockServiceProtos.LockHeartbeatRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.LockServiceProtos.LockHeartbeatResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.LockServiceProtos.LockRequest;
@@ -291,6 +292,8 @@ import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.ListR
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.RemoveReplicationPeerRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.RemoveReplicationPeerResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.ReplicationState;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.TransitReplicationPeerSyncReplicationStateRequest;
+import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.TransitReplicationPeerSyncReplicationStateResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.UpdateReplicationPeerConfigRequest;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.ReplicationProtos.UpdateReplicationPeerConfigResponse;
 import org.apache.hadoop.hbase.shaded.protobuf.generated.SnapshotProtos.SnapshotDescription;
@@ -450,22 +453,29 @@ public class MasterRpcServices extends RSRpcServices
   }
 
   @Override
-  public RegionServerReportResponse regionServerReport(
-      RpcController controller, RegionServerReportRequest request) throws ServiceException {
+  public RegionServerReportResponse regionServerReport(RpcController controller,
+      RegionServerReportRequest request) throws ServiceException {
     try {
       master.checkServiceStarted();
-      int version = VersionInfoUtil.getCurrentClientVersionNumber();
+      int versionNumber = 0;
+      String version = "0.0.0";
+      VersionInfo versionInfo = VersionInfoUtil.getCurrentClientVersionInfo();
+      if (versionInfo != null) {
+        version = versionInfo.getVersion();
+        versionNumber = VersionInfoUtil.getVersionNumber(versionInfo);
+      }
       ClusterStatusProtos.ServerLoad sl = request.getLoad();
       ServerName serverName = ProtobufUtil.toServerName(request.getServer());
       ServerMetrics oldLoad = master.getServerManager().getLoad(serverName);
-      ServerMetrics newLoad = ServerMetricsBuilder.toServerMetrics(serverName, version, sl);
+      ServerMetrics newLoad =
+        ServerMetricsBuilder.toServerMetrics(serverName, versionNumber, version, sl);
       master.getServerManager().regionServerReport(serverName, newLoad);
-      master.getAssignmentManager()
-          .reportOnlineRegions(serverName, newLoad.getRegionMetrics().keySet());
+      master.getAssignmentManager().reportOnlineRegions(serverName,
+        newLoad.getRegionMetrics().keySet());
       if (sl != null && master.metricsMaster != null) {
         // Up our metrics.
-        master.metricsMaster.incrementRequests(sl.getTotalNumberOfRequests()
-            - (oldLoad != null ? oldLoad.getRequestCount() : 0));
+        master.metricsMaster.incrementRequests(
+          sl.getTotalNumberOfRequests() - (oldLoad != null ? oldLoad.getRequestCount() : 0));
       }
     } catch (IOException ioe) {
       throw new ServiceException(ioe);
@@ -474,23 +484,28 @@ public class MasterRpcServices extends RSRpcServices
   }
 
   @Override
-  public RegionServerStartupResponse regionServerStartup(
-      RpcController controller, RegionServerStartupRequest request) throws ServiceException {
+  public RegionServerStartupResponse regionServerStartup(RpcController controller,
+      RegionServerStartupRequest request) throws ServiceException {
     // Register with server manager
     try {
       master.checkServiceStarted();
-      int version = VersionInfoUtil.getCurrentClientVersionNumber();
-      InetAddress ia = master.getRemoteInetAddress(
-        request.getPort(), request.getServerStartCode());
+      int versionNumber = 0;
+      String version = "0.0.0";
+      VersionInfo versionInfo = VersionInfoUtil.getCurrentClientVersionInfo();
+      if (versionInfo != null) {
+        version = versionInfo.getVersion();
+        versionNumber = VersionInfoUtil.getVersionNumber(versionInfo);
+      }
+      InetAddress ia = master.getRemoteInetAddress(request.getPort(), request.getServerStartCode());
       // if regionserver passed hostname to use,
       // then use it instead of doing a reverse DNS lookup
-      ServerName rs = master.getServerManager().regionServerStartup(request, version, ia);
+      ServerName rs =
+        master.getServerManager().regionServerStartup(request, versionNumber, version, ia);
 
       // Send back some config info
       RegionServerStartupResponse.Builder resp = createConfigurationSubset();
       NameStringPair.Builder entry = NameStringPair.newBuilder()
-        .setName(HConstants.KEY_FOR_HOSTNAME_SEEN_BY_MASTER)
-        .setValue(rs.getHostname());
+        .setName(HConstants.KEY_FOR_HOSTNAME_SEEN_BY_MASTER).setValue(rs.getHostname());
       resp.addMapEntries(entry.build());
 
       return resp.build();
@@ -596,6 +611,8 @@ public class MasterRpcServices extends RSRpcServices
     try {
       long procId =
           master.createTable(tableDescriptor, splitKeys, req.getNonceGroup(), req.getNonce());
+      LOG.info(master.getClientIdAuditPrefix() + " procedure request for creating table: " +
+              req.getTableSchema().getTableName() + " procId is: " + procId);
       return CreateTableResponse.newBuilder().setProcId(procId).build();
     } catch (IOException ioe) {
       throw new ServiceException(ioe);
@@ -1942,6 +1959,20 @@ public class MasterRpcServices extends RSRpcServices
       long procId = master.updateReplicationPeerConfig(request.getPeerId(),
         ReplicationPeerConfigUtil.convert(request.getPeerConfig()));
       return UpdateReplicationPeerConfigResponse.newBuilder().setProcId(procId).build();
+    } catch (ReplicationException | IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public TransitReplicationPeerSyncReplicationStateResponse
+      transitReplicationPeerSyncReplicationState(RpcController controller,
+          TransitReplicationPeerSyncReplicationStateRequest request) throws ServiceException {
+    try {
+      long procId = master.transitReplicationPeerSyncReplicationState(request.getPeerId(),
+        ReplicationPeerConfigUtil.toSyncReplicationState(request.getSyncReplicationState()));
+      return TransitReplicationPeerSyncReplicationStateResponse.newBuilder().setProcId(procId)
+          .build();
     } catch (ReplicationException | IOException e) {
       throw new ServiceException(e);
     }
